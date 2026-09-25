@@ -19,8 +19,8 @@ mkdirSync(DIST, { recursive: true });
 // Copy index.html and fix paths for dist with cache-busting version
 const buildTimestamp = Date.now();
 let html = readFileSync(join(__dirname, 'index.html'), 'utf-8');
-html = html.replace('src/styles.css', `styles.css?v=${buildTimestamp}`);
-html = html.replace('src/app.js', `app.js?v=${buildTimestamp}`);
+html = html.replace(/(?:src\/)?styles\.css(?:\?v=\d+)?/g, `styles.css?v=${buildTimestamp}`);
+html = html.replace(/(?:src\/)?app\.js(?:\?v=\d+)?/g, `app.js?v=${buildTimestamp}`);
 writeFileSync(join(DIST, 'index.html'), html);
 
 // Copy CSS
