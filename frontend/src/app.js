@@ -160,6 +160,7 @@ function navigateTo(page, params = {}) {
     python: 'Python Services',
     firewall: 'Firewall',
     security: 'Security',
+    autotuner: 'Server Auto-Tuner',
   };
   document.getElementById('page-title').textContent = titles[page] || page;
 
@@ -186,6 +187,7 @@ function navigateTo(page, params = {}) {
     python: renderPython,
     firewall: renderFirewall,
     security: renderSecurity,
+    autotuner: renderAutoTuner,
   };
 
   if (renderers[page]) renderers[page](content);
@@ -4390,12 +4392,502 @@ async function setupWPFail2ban() {
   else toast(result?.error || 'Failed', 'error');
 }
 
+// ─── Server Auto-Tuner & Backup System Page ─────────────────
+
+let tunerData = null;
+let currentTunerPreset = 'auto';
+let currentTunerRedis = false;
+
+function calculateClientAllocations(specs, preset = 'auto', enableRedis = false) {
+  const ramMb = specs.ram;
+  const cores = specs.cpu;
+  const osOverheadMb = 250;
+
+  let dbMb = 256;
+  if (ramMb <= 1024) {
+    dbMb = 256;
+  } else if (ramMb <= 4096) {
+    if (preset === 'conservative') dbMb = Math.round(ramMb * 0.35);
+    else if (preset === 'aggressive') dbMb = Math.round(ramMb * 0.45);
+    else dbMb = Math.round(ramMb * 0.40);
+  } else {
+    if (preset === 'conservative') dbMb = Math.round(ramMb * 0.50);
+    else if (preset === 'aggressive') dbMb = Math.round(ramMb * 0.60);
+    else dbMb = Math.round(ramMb * 0.55);
+  }
+
+  const redisMb = enableRedis ? Math.max(64, Math.round(ramMb * 0.10)) : 0;
+  let availablePhpRamMb = ramMb - (osOverheadMb + dbMb + redisMb);
+  if (availablePhpRamMb < 160) availablePhpRamMb = 160;
+
+  const rawWorkers = Math.floor(availablePhpRamMb / 45);
+
+  let maxAllowedWorkers;
+  if (ramMb <= 1024 || cores <= 1) {
+    maxAllowedWorkers = preset === 'conservative' ? 10 : (preset === 'aggressive' ? 12 : 11);
+  } else if (ramMb <= 2048) {
+    maxAllowedWorkers = preset === 'conservative' ? 20 : (preset === 'aggressive' ? 25 : 22);
+  } else if (ramMb <= 4096) {
+    maxAllowedWorkers = preset === 'conservative' ? 50 : (preset === 'aggressive' ? 60 : 55);
+  } else {
+    const coreCap = cores * (preset === 'conservative' ? 25 : (preset === 'aggressive' ? 35 : 30));
+    maxAllowedWorkers = Math.min(Math.floor(ramMb / 45), coreCap);
+  }
+
+  const finalWorkers = Math.max(4, Math.min(rawWorkers, maxAllowedWorkers));
+
+  return {
+    totalRamMb: ramMb,
+    cpuCores: cores,
+    osOverheadMb,
+    dbMb,
+    redisMb,
+    availablePhpRamMb,
+    phpWorkers: finalWorkers,
+    maxConns: finalWorkers,
+  };
+}
+
+async function renderAutoTuner(container) {
+  container.innerHTML = `<div class="p-8 text-center"><p class="text-muted">Loading Server Auto-Tuner & Resource Engine…</p></div>`;
+
+  const status = await api('/advanced/tuner/status');
+  if (!status) {
+    container.innerHTML = `
+      <div class="card p-6">
+        <h3 class="text-danger mb-2">Access Denied or Failed to Load Auto-Tuner</h3>
+        <p class="text-muted">Only users with Administrator role are authorized to inspect or tune server resource configurations.</p>
+      </div>
+    `;
+    return;
+  }
+
+  tunerData = status;
+  currentTunerPreset = (status.enabled && status.currentProfile && status.currentProfile !== 'native')
+    ? status.currentProfile
+    : 'auto';
+  currentTunerRedis = Boolean(status.enableRedis);
+
+  renderAutoTunerContent(container);
+}
+
+function renderAutoTunerContent(container) {
+  const isEnabled = tunerData.enabled;
+  const profile = tunerData.currentProfile || 'native';
+  const specs = tunerData.specs || { ram: 2048, cpu: 2, swap: 0 };
+  const alloc = calculateClientAllocations(specs, currentTunerPreset, currentTunerRedis);
+
+  const osPct = Math.max(5, Math.round((alloc.osOverheadMb / alloc.totalRamMb) * 100));
+  const dbPct = Math.max(10, Math.round((alloc.dbMb / alloc.totalRamMb) * 100));
+  const redisPct = alloc.redisMb ? Math.max(5, Math.round((alloc.redisMb / alloc.totalRamMb) * 100)) : 0;
+  const phpPct = Math.max(15, 100 - (osPct + dbPct + redisPct));
+
+  container.innerHTML = `
+    <!-- Header with Master Status -->
+    <div class="flex justify-between items-center mb-6 flex-wrap gap-4">
+      <div>
+        <div class="flex items-center gap-3">
+          <h2 style="font-size:1.4rem;font-weight:700;margin:0;">Server Auto-Tuner & Backup System</h2>
+          <span class="badge ${isEnabled ? 'badge-success' : ''}" style="${!isEnabled ? 'background:rgba(100,116,139,0.18);color:#94a3b8;' : ''};padding:6px 12px;font-size:12px;">
+            ${isEnabled ? `⚡ Auto-Tuned Profile Active (${profile.toUpperCase()})` : '🛡️ Native System Defaults Active'}
+          </span>
+        </div>
+        <p class="text-muted text-sm" style="margin-top:4px;">
+          Hardware-tailored dynamic tuning for OpenLiteSpeed, MariaDB, and Redis with zero-downtime safety nets.
+        </p>
+      </div>
+
+      <div class="flex items-center gap-3">
+        <button class="btn btn-secondary btn-sm" onclick="navigateTo('autotuner')" title="Refresh hardware metrics">
+          🔄 Refresh
+        </button>
+      </div>
+    </div>
+
+    <!-- Admin Warning Notice -->
+    <div style="background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.25); border-radius: 8px; padding: 14px 18px; margin-bottom: 24px; display: flex; align-items: center; gap: 14px;">
+      <svg style="width: 26px; height: 26px; color: #f59e0b; flex-shrink: 0;" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+      </svg>
+      <div style="font-size: 13px; color: var(--text-secondary); line-height: 1.5;">
+        <strong style="color: #f59e0b; font-weight: 600;">Admin Warning Notice:</strong>
+        Modifying low-level server configuration impacts system stability. Automated baseline backups (<code>/var/backups/deols/system_defaults.tar.gz</code>) are created prior to applying changes.
+      </div>
+    </div>
+
+    <!-- Master Switch & Control Toolbar Card -->
+    <div class="card mb-6">
+      <div class="card-header flex justify-between items-center">
+        <div>
+          <h3 class="card-title">Tuning Control & Master Switch</h3>
+          <p class="text-muted text-xs">Toggle the tuner on or off. Restoring defaults rolls back all configurations.</p>
+        </div>
+        <div class="flex items-center gap-3">
+          <label class="toggle" title="Toggle Auto-Tuner Master Switch">
+            <input type="checkbox" id="tuner-master-toggle" ${isEnabled ? 'checked' : ''} onchange="toggleTunerMaster(this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+          <span style="font-size:13px;font-weight:600;color:${isEnabled ? 'var(--success)' : 'var(--text-secondary)'};">
+            ${isEnabled ? 'Tuning Enabled' : 'Tuning Disabled'}
+          </span>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="mb-4">
+          <label style="font-size:13px;font-weight:600;color:var(--text-primary);margin-bottom:8px;display:block;">
+            Select Optimization Preset
+          </label>
+          <div class="tuner-preset-grid">
+            <!-- Conservative -->
+            <div class="tuner-preset-card ${currentTunerPreset === 'conservative' ? 'selected' : ''}" onclick="selectTunerPreset('conservative')">
+              <span class="preset-badge" style="background:rgba(59,130,246,0.15);color:#3b82f6;">STABILITY</span>
+              <h4 style="margin:0 0 6px;font-size:15px;font-weight:700;">Conservative</h4>
+              <p class="text-muted text-xs" style="margin-bottom:12px;line-height:1.4;">
+                Allocates 35% RAM to MariaDB buffer pool. Enforces strict worker caps (max 10-20 workers) to prevent OOM errors on entry-level servers.
+              </p>
+              <div class="text-xs text-muted" style="margin-top:auto;">
+                <strong>Best for:</strong> 1GB VPS, bursty memory spikes, database-heavy apps.
+              </div>
+            </div>
+
+            <!-- Auto (Recommended) -->
+            <div class="tuner-preset-card ${currentTunerPreset === 'auto' ? 'selected' : ''}" onclick="selectTunerPreset('auto')">
+              <span class="preset-badge" style="background:rgba(99,102,241,0.15);color:var(--accent-primary);">RECOMMENDED</span>
+              <h4 style="margin:0 0 6px;font-size:15px;font-weight:700;">Auto (Adaptive)</h4>
+              <p class="text-muted text-xs" style="margin-bottom:12px;line-height:1.4;">
+                Optimal balance: 40% RAM for MariaDB (55% on >4GB), adaptive PHP concurrency, and balanced worker limits.
+              </p>
+              <div class="text-xs text-muted" style="margin-top:auto;">
+                <strong>Best for:</strong> Production WordPress with LiteSpeed Cache.
+              </div>
+            </div>
+
+            <!-- Aggressive -->
+            <div class="tuner-preset-card ${currentTunerPreset === 'aggressive' ? 'selected' : ''}" onclick="selectTunerPreset('aggressive')">
+              <span class="preset-badge" style="background:rgba(239,68,68,0.15);color:#ef4444;">HIGH TRAFFIC</span>
+              <h4 style="margin:0 0 6px;font-size:15px;font-weight:700;">Aggressive</h4>
+              <p class="text-muted text-xs" style="margin-bottom:12px;line-height:1.4;">
+                Pushes MariaDB buffer pool to 45%-60% and unlocks higher PHP concurrency ceilings for high concurrent traffic.
+              </p>
+              <div class="text-xs text-muted" style="margin-top:auto;">
+                <strong>Best for:</strong> Multi-core VPS (4GB+ RAM), high concurrent visitors.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Redis Option -->
+        <div style="background:var(--bg-tertiary);border-radius:8px;padding:12px 16px;margin-bottom:20px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+          <div>
+            <label for="tuner-redis-check" style="font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:8px;margin:0;">
+              <input type="checkbox" id="tuner-redis-check" ${currentTunerRedis ? 'checked' : ''} onchange="toggleTunerRedis(this.checked)">
+              Allocate Dedicated Redis Cache Pool (10% of Total RAM)
+            </label>
+            <p class="text-muted text-xs" style="margin:4px 0 0 24px;">Configures Redis with <code>maxmemory-policy allkeys-lru</code> to accelerate object caching.</p>
+          </div>
+          <span class="badge" style="background:rgba(217,119,6,0.15);color:#d97706;font-size:12px;">
+            ${alloc.redisMb ? `${alloc.redisMb} MB Pool` : 'No RAM Reserved'}
+          </span>
+        </div>
+
+        <!-- Action Toolbar -->
+        <div class="flex justify-between items-center flex-wrap gap-4 pt-2" style="border-top:1px solid var(--border-primary);">
+          <div class="flex gap-3">
+            <button class="btn btn-primary" id="btn-apply-tuner" onclick="applyTunerPreset()">
+              🚀 Apply Selected Preset (${currentTunerPreset.toUpperCase()})
+            </button>
+          </div>
+          <div>
+            <button class="btn btn-danger" id="btn-restore-tuner" onclick="restoreTunerDefaults()" ${!tunerData.backupExists && !isEnabled ? 'disabled' : ''}>
+              🔄 Restore Factory System Defaults
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Real-Time Allocation Preview Card -->
+    <div class="card mb-6">
+      <div class="card-header flex justify-between items-center">
+        <div>
+          <h3 class="card-title">Real-World Resource Allocation Preview</h3>
+          <p class="text-muted text-xs">Hardware-derived allocation budget calculated safely for your server specs.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="badge" style="background:rgba(59,130,246,0.15);color:#38bdf8;font-size:12px;">
+            RAM: ${specs.ram} MB
+          </span>
+          <span class="badge" style="background:rgba(139,92,246,0.15);color:#a78bfa;font-size:12px;">
+            CPU: ${specs.cpu} vCPU
+          </span>
+          <span class="badge" style="background:rgba(16,185,129,0.15);color:#34d399;font-size:12px;">
+            Swap: ${specs.swap} MB
+          </span>
+        </div>
+      </div>
+      <div class="card-body">
+        <!-- Multi-segment visual allocation bar -->
+        <div class="tuner-alloc-bar">
+          <div class="tuner-alloc-segment" style="width:${osPct}%; background:#64748b;" title="OS Base Overhead: ${alloc.osOverheadMb} MB (${osPct}%)">
+            OS ${alloc.osOverheadMb}M
+          </div>
+          <div class="tuner-alloc-segment" style="width:${dbPct}%; background:#0284c7;" title="MariaDB Buffer Pool: ${alloc.dbMb} MB (${dbPct}%)">
+            MariaDB ${alloc.dbMb}M
+          </div>
+          ${alloc.redisMb ? `
+            <div class="tuner-alloc-segment" style="width:${redisPct}%; background:#d97706;" title="Redis Cache: ${alloc.redisMb} MB (${redisPct}%)">
+              Redis ${alloc.redisMb}M
+            </div>
+          ` : ''}
+          <div class="tuner-alloc-segment" style="width:${phpPct}%; background:#7c3aed;" title="Available PHP Pool: ${alloc.availablePhpRamMb} MB (${phpPct}%)">
+            PHP Pool ${alloc.availablePhpRamMb}M (${alloc.phpWorkers} Workers)
+          </div>
+        </div>
+
+        <!-- Legend -->
+        <div class="tuner-alloc-legend">
+          <div class="tuner-legend-item">
+            <span class="tuner-legend-dot" style="background:#64748b;"></span>
+            <span><strong>OS Overhead:</strong> ${alloc.osOverheadMb} MB (Reserved)</span>
+          </div>
+          <div class="tuner-legend-item">
+            <span class="tuner-legend-dot" style="background:#0284c7;"></span>
+            <span><strong>MariaDB Buffer:</strong> ${alloc.dbMb} MB (${dbPct}%)</span>
+          </div>
+          <div class="tuner-legend-item">
+            <span class="tuner-legend-dot" style="background:#d97706;"></span>
+            <span><strong>Redis Cache:</strong> ${alloc.redisMb ? `${alloc.redisMb} MB (10%)` : 'Disabled'}</span>
+          </div>
+          <div class="tuner-legend-item">
+            <span class="tuner-legend-dot" style="background:#7c3aed;"></span>
+            <span><strong>PHP Concurrency:</strong> ${alloc.phpWorkers} Workers (maxConns: ${alloc.phpWorkers})</span>
+          </div>
+        </div>
+
+        <!-- Stat breakdown grid -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:16px;margin-top:20px;">
+          <div class="stat-card" style="padding:14px;">
+            <span class="stat-card-label">MariaDB Buffer Pool</span>
+            <div class="stat-card-value" style="font-size:1.3rem;color:#0284c7;">${alloc.dbMb} MB</div>
+            <div class="stat-card-change"><code>innodb_buffer_pool_size</code></div>
+          </div>
+          <div class="stat-card" style="padding:14px;">
+            <span class="stat-card-label">OpenLiteSpeed PHP Concurrency</span>
+            <div class="stat-card-value" style="font-size:1.3rem;color:#7c3aed;">${alloc.phpWorkers} Workers</div>
+            <div class="stat-card-change"><code>PHP_LSAPI_CHILDREN = ${alloc.phpWorkers}</code></div>
+          </div>
+          <div class="stat-card" style="padding:14px;">
+            <span class="stat-card-label">Redis Cache Limit</span>
+            <div class="stat-card-value" style="font-size:1.3rem;color:#d97706;">${alloc.redisMb ? `${alloc.redisMb} MB` : 'Disabled'}</div>
+            <div class="stat-card-change"><code>maxmemory-policy: allkeys-lru</code></div>
+          </div>
+          <div class="stat-card" style="padding:14px;">
+            <span class="stat-card-label">Swap Memory Guardrail</span>
+            <div class="stat-card-value" style="font-size:1.3rem;color:#10b981;">${specs.swap ? `${specs.swap} MB` : '2048 MB Safe'}</div>
+            <div class="stat-card-change"><code>vm.swappiness = 10</code></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Configuration Comparison & Safety Table -->
+    <div class="card mb-6">
+      <div class="card-header"><h3 class="card-title">Low-Level Parameter Comparison</h3></div>
+      <div class="card-body">
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Service</th>
+                <th>Tuned Parameter</th>
+                <th>Target Config Path</th>
+                <th>Native Factory Default</th>
+                <th>Auto-Tuned Allocation</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>OpenLiteSpeed</strong></td>
+                <td><code>PHP_LSAPI_CHILDREN</code></td>
+                <td class="text-mono text-xs">/usr/local/lsws/conf/httpd_config.conf</td>
+                <td class="text-muted">35</td>
+                <td class="text-bold" style="color:var(--accent-primary);">${alloc.phpWorkers}</td>
+              </tr>
+              <tr>
+                <td><strong>OpenLiteSpeed</strong></td>
+                <td><code>maxConns</code></td>
+                <td class="text-mono text-xs">/usr/local/lsws/conf/httpd_config.conf</td>
+                <td class="text-muted">35</td>
+                <td class="text-bold" style="color:var(--accent-primary);">${alloc.phpWorkers}</td>
+              </tr>
+              <tr>
+                <td><strong>MariaDB</strong></td>
+                <td><code>innodb_buffer_pool_size</code></td>
+                <td class="text-mono text-xs">/etc/mysql/mariadb.conf.d/99-deols-tuner.cnf</td>
+                <td class="text-muted">128 MB</td>
+                <td class="text-bold" style="color:#0284c7;">${alloc.dbMb} MB</td>
+              </tr>
+              <tr>
+                <td><strong>MariaDB</strong></td>
+                <td><code>innodb_flush_log_at_trx_commit</code></td>
+                <td class="text-mono text-xs">/etc/mysql/mariadb.conf.d/99-deols-tuner.cnf</td>
+                <td class="text-muted">1 (Strict Disk Write)</td>
+                <td class="text-bold" style="color:#0284c7;">2 (OS Cached Write)</td>
+              </tr>
+              <tr>
+                <td><strong>MariaDB</strong></td>
+                <td><code>innodb_flush_method</code></td>
+                <td class="text-mono text-xs">/etc/mysql/mariadb.conf.d/99-deols-tuner.cnf</td>
+                <td class="text-muted">fsync</td>
+                <td class="text-bold" style="color:#0284c7;">O_DIRECT</td>
+              </tr>
+              <tr>
+                <td><strong>Redis Cache</strong></td>
+                <td><code>maxmemory</code></td>
+                <td class="text-mono text-xs">/etc/redis/redis.conf</td>
+                <td class="text-muted">0 (Uncapped)</td>
+                <td class="text-bold" style="color:#d97706;">${alloc.redisMb ? `${alloc.redisMb} MB` : 'N/A'}</td>
+              </tr>
+              <tr>
+                <td><strong>Linux Kernel</strong></td>
+                <td><code>vm.swappiness</code></td>
+                <td class="text-mono text-xs">/etc/sysctl.d/99-deols-tuner.conf</td>
+                <td class="text-muted">60</td>
+                <td class="text-bold" style="color:#10b981;">10 (Prevent Unnecessary Swapping)</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Automated Backup & Snapshot Status Card -->
+    <div class="card">
+      <div class="card-header"><h3 class="card-title">Automated Backup & Snapshot Engine</h3></div>
+      <div class="card-body">
+        <p class="text-muted text-sm mb-4">
+          DEOLS automatically creates compressed baseline snapshots before any configuration modification.
+        </p>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));gap:14px;">
+          <div style="background:var(--bg-tertiary);border-radius:8px;padding:14px;border:1px solid var(--border-primary);">
+            <div class="flex items-center justify-between mb-2">
+              <span style="font-size:13px;font-weight:700;">Baseline Defaults Snapshot</span>
+              <span class="badge ${tunerData.backupExists ? 'badge-success' : ''}" style="${!tunerData.backupExists ? 'background:rgba(100,116,139,0.2);color:#94a3b8;' : ''};font-size:11px;">
+                ${tunerData.backupExists ? 'Archived & Verified' : 'Created on First Activation'}
+              </span>
+            </div>
+            <div class="text-mono text-xs text-muted mb-2">/var/backups/deols/system_defaults.tar.gz</div>
+            <p class="text-xs text-muted" style="margin:0;">
+              Captures unmodified factory state of OpenLiteSpeed, MariaDB, and Redis for 1-click disaster recovery.
+            </p>
+          </div>
+
+          <div style="background:var(--bg-tertiary);border-radius:8px;padding:14px;border:1px solid var(--border-primary);">
+            <div class="flex items-center justify-between mb-2">
+              <span style="font-size:13px;font-weight:700;">Pre-Tuning Snapshot</span>
+              <span class="badge badge-info" style="font-size:11px;">
+                ${tunerData.manifest?.lastBackup ? 'Active' : 'Standby'}
+              </span>
+            </div>
+            <div class="text-mono text-xs text-muted mb-2">/var/backups/deols/pre_tuning_backup.tar.gz</div>
+            <p class="text-xs text-muted" style="margin:0;">
+              ${tunerData.manifest?.lastBackup ? `Last snapshot: ${timeAgo(tunerData.manifest.lastBackup)}` : 'Captured dynamically prior to any preset change.'}
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function selectTunerPreset(preset) {
+  currentTunerPreset = preset;
+  const container = document.getElementById('content-body');
+  if (container) renderAutoTunerContent(container);
+}
+
+function toggleTunerRedis(enable) {
+  currentTunerRedis = enable;
+  const container = document.getElementById('content-body');
+  if (container) renderAutoTunerContent(container);
+}
+
+async function toggleTunerMaster(enable) {
+  if (enable) {
+    await applyTunerPreset();
+  } else {
+    await restoreTunerDefaults();
+  }
+}
+
+async function applyTunerPreset() {
+  const btn = document.getElementById('btn-apply-tuner');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Applying Tuning & Restarting Services…';
+  }
+
+  toast(`Applying Auto-Tuner preset "${currentTunerPreset}"…`, 'info', 6000);
+
+  const res = await api('/advanced/tuner/enable', {
+    method: 'POST',
+    body: {
+      preset: currentTunerPreset,
+      enableRedis: currentTunerRedis,
+    },
+  });
+
+  if (res?.success) {
+    toast(res.message || 'Auto-Tuner profile activated successfully!', 'success', 6000);
+    const container = document.getElementById('content-body');
+    if (container) renderAutoTuner(container);
+  } else {
+    toast(res?.error || 'Failed to apply auto-tuner preset', 'error', 8000);
+    const container = document.getElementById('content-body');
+    if (container) renderAutoTuner(container);
+  }
+}
+
+async function restoreTunerDefaults() {
+  if (!confirm('Are you sure you want to restore all server configurations to factory defaults? Services will be gracefully restarted.')) {
+    const container = document.getElementById('content-body');
+    if (container) renderAutoTuner(container);
+    return;
+  }
+
+  const btn = document.getElementById('btn-restore-tuner');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Restoring System Defaults…';
+  }
+
+  toast('Restoring baseline system defaults…', 'info', 6000);
+
+  const res = await api('/advanced/tuner/restore', { method: 'POST' });
+  if (res?.success) {
+    toast(res.message || 'Restored system defaults successfully!', 'success', 6000);
+    const container = document.getElementById('content-body');
+    if (container) renderAutoTuner(container);
+  } else {
+    toast(res?.error || 'Failed to restore system defaults', 'error', 8000);
+    const container = document.getElementById('content-body');
+    if (container) renderAutoTuner(container);
+  }
+}
+
 // ─── Make functions globally accessible ─────────────────────
 
 // ─── Global Window Bindings ─────────────────────────────────
 
 const _globalExports = {
   navigateTo,
+  renderAutoTuner,
+  selectTunerPreset,
+  toggleTunerRedis,
+  toggleTunerMaster,
+  applyTunerPreset,
+  restoreTunerDefaults,
   purgeAllCache,
   showNewSiteModal,
   repairPerms,

@@ -34,6 +34,7 @@ import systemRoutes from './api/system.js';
 import pythonRoutes from './api/python.js';
 import securityRoutes from './api/security.js';
 import olsRoutes from './api/ols.js';
+import tunerRoutes from './api/tuner.js';
 
 // Background Server-Side Automation Daemon
 import { startAutomationDaemon, stopAutomationDaemon } from './services/automation.js';
@@ -132,6 +133,12 @@ async function bootstrap() {
     }
   });
 
+  app.decorate('adminOnly', async (request, reply) => {
+    if (request.user?.role !== 'admin') {
+      return reply.code(403).send({ error: 'Forbidden: Administrator privileges required' });
+    }
+  });
+
   // ─── API Routes ─────────────────────────────────────────
 
   await app.register(authRoutes, { prefix: '/api/auth' });
@@ -149,6 +156,7 @@ async function bootstrap() {
   await app.register(pythonRoutes, { prefix: '/api/python' });
   await app.register(securityRoutes, { prefix: '/api/security' });
   await app.register(olsRoutes, { prefix: '/api/ols' });
+  await app.register(tunerRoutes, { prefix: '/api/advanced/tuner' });
 
   // ─── Panel Info Endpoint ────────────────────────────────
 

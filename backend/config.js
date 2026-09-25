@@ -57,6 +57,7 @@ export const config = {
   webRoot: process.env.WEB_ROOT || '/var/www',
   cacheDir: process.env.OLS_CACHE_DIR || '/usr/local/lsws/cachedata',
   systemdDir: process.env.SYSTEMD_DIR || (process.platform === 'linux' ? '/etc/systemd/system' : join(DATA_DIR, 'systemd')),
+  backupDir: process.env.BACKUP_DIR || (process.platform === 'linux' ? '/var/backups/deols' : join(DATA_DIR, 'backups')),
 
   // Database
   db: {
