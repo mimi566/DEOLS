@@ -20,7 +20,10 @@ export async function shell(command, opts = {}) {
   const {
     timeout = 60_000,
     cwd = '/tmp',
-    env = process.env,
+    env = {
+      ...process.env,
+      PATH: process.env.PATH || '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/lsws/bin:/usr/local/lsws/admin/misc',
+    },
     maxBuffer = 10 * 1024 * 1024, // 10 MB
   } = opts;
 
@@ -30,6 +33,7 @@ export async function shell(command, opts = {}) {
       cwd,
       env,
       maxBuffer,
+      shell: process.platform === 'win32' ? undefined : '/bin/bash',
     });
     return { stdout: stdout.trim(), stderr: stderr.trim(), code: 0 };
   } catch (err) {

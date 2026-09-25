@@ -121,8 +121,8 @@ async function bootstrap() {
     try {
       // Try cookie first, then Authorization header
       const token =
-        request.cookies.deols_token ||
-        request.headers.authorization?.replace('Bearer ', '');
+        request.cookies?.deols_token ||
+        request.headers.authorization?.replace(/^Bearer\s+/i, '');
       if (!token) {
         return reply.code(401).send({ error: 'Authentication required' });
       }

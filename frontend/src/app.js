@@ -209,26 +209,31 @@ document.getElementById('mobile-menu-btn')?.addEventListener('click', () => {
 // ─── Auth Flow ──────────────────────────────────────────────
 
 async function checkAuth() {
-  // Check if panel is initialized
-  const status = await api('/auth/status');
-  if (!status) return showLogin(); // Network error fallback
+  try {
+    // Check if panel is initialized
+    const status = await api('/auth/status');
+    if (!status) return showLogin(); // Network error fallback
 
-  if (!status.initialized) {
-    return showSetup();
-  }
-
-  // Try existing session
-  state.token = localStorage.getItem('deols_token');
-  if (state.token) {
-    const me = await api('/auth/me');
-    if (me && !me.error) {
-      state.user = me;
-      showDashboard();
-      return;
+    if (!status.initialized) {
+      return showSetup();
     }
-  }
 
-  showLogin();
+    // Try existing session
+    state.token = localStorage.getItem('deols_token');
+    if (state.token) {
+      const me = await api('/auth/me');
+      if (me && !me.error) {
+        state.user = me;
+        showDashboard();
+        return;
+      }
+    }
+
+    showLogin();
+  } catch (err) {
+    console.error('Auth initialization error:', err);
+    showLogin();
+  }
 }
 
 function showSetup() {
@@ -255,10 +260,18 @@ function showDashboard() {
 }
 
 function hideAll() {
-  document.getElementById('loading-screen').classList.add('fade-out');
-  document.getElementById('setup-screen').style.display = 'none';
-  document.getElementById('login-screen').style.display = 'none';
-  document.getElementById('dashboard').style.display = 'none';
+  const loading = document.getElementById('loading-screen');
+  if (loading) {
+    loading.classList.add('fade-out');
+    loading.style.pointerEvents = 'none';
+    setTimeout(() => { loading.style.display = 'none'; }, 250);
+  }
+  const s = document.getElementById('setup-screen');
+  if (s) s.style.display = 'none';
+  const l = document.getElementById('login-screen');
+  if (l) l.style.display = 'none';
+  const d = document.getElementById('dashboard');
+  if (d) d.style.display = 'none';
 }
 
 // Setup screen (Root SSH Required)
@@ -3915,17 +3928,20 @@ async function deleteCron(index) {
 function renderTerminal(container) {
   container.innerHTML = `
     <div class="terminal-container">
-      <div class="terminal-header">
-        <span class="terminal-dot red"></span>
-        <span class="terminal-dot yellow"></span>
-        <span class="terminal-dot green"></span>
-        <span class="text-sm text-muted" style="margin-left:8px">root@deols</span>
+      <div class="terminal-header" style="display:flex; justify-content:space-between; align-items:center;">
+        <div style="display:flex; align-items:center; gap:6px;">
+          <span class="terminal-dot red"></span>
+          <span class="terminal-dot yellow"></span>
+          <span class="terminal-dot green"></span>
+          <span class="text-sm text-muted" style="margin-left:8px; font-family:var(--font-mono);">root@deols:~#</span>
+        </div>
+        <span class="text-xs text-muted">Type commands (e.g. <code>ls -la</code>, <code>uptime</code>, <code>systemctl status lsws</code>, <code>clear</code>)</span>
       </div>
-      <div class="terminal-body" id="terminal-output">
-        <div style="margin-bottom:16px;color:#58a6ff">Welcome to DEOLS Terminal</div>
-        <div class="flex items-center gap-2">
-          <span style="color:#79c0ff">root@deols:~#</span>
-          <input type="text" id="terminal-input" style="flex:1;background:none;border:none;color:#c9d1d9;font-family:var(--font-mono);font-size:0.85rem;outline:none" placeholder="Type a command…" autofocus>
+      <div class="terminal-body" id="terminal-output" style="height:480px; overflow-y:auto; padding:16px; font-family:var(--font-mono); background:#0d1117;">
+        <div style="margin-bottom:12px;color:#58a6ff;">⚡ DEOLS Server Terminal (Debian 12 Bookworm)</div>
+        <div class="flex items-center gap-2" id="terminal-prompt-line">
+          <span style="color:#79c0ff; font-weight:600;">root@deols:~#</span>
+          <input type="text" id="terminal-input" style="flex:1;background:none;border:none;color:#c9d1d9;font-family:var(--font-mono);font-size:0.85rem;outline:none" placeholder="Type a command…" autofocus autocomplete="off" spellcheck="false">
         </div>
       </div>
     </div>
@@ -3933,23 +3949,64 @@ function renderTerminal(container) {
 
   const input = document.getElementById('terminal-input');
   const output = document.getElementById('terminal-output');
+  const promptLine = document.getElementById('terminal-prompt-line');
+  const cmdHistory = [];
+  let historyIdx = -1;
+
+  input?.focus();
 
   input?.addEventListener('keydown', async (e) => {
-    if (e.key !== 'Enter' || !input.value.trim()) return;
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (cmdHistory.length && historyIdx < cmdHistory.length - 1) {
+        historyIdx++;
+        input.value = cmdHistory[cmdHistory.length - 1 - historyIdx] || '';
+      }
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (historyIdx > 0) {
+        historyIdx--;
+        input.value = cmdHistory[cmdHistory.length - 1 - historyIdx] || '';
+      } else {
+        historyIdx = -1;
+        input.value = '';
+      }
+      return;
+    }
+
+    if (e.key !== 'Enter') return;
 
     const cmd = input.value.trim();
+    if (!cmd) return;
+
+    cmdHistory.push(cmd);
+    historyIdx = -1;
+
+    if (cmd === 'clear') {
+      renderTerminal(container);
+      return;
+    }
+
     const cmdLine = document.createElement('div');
-    cmdLine.innerHTML = `<span style="color:#79c0ff">root@deols:~#</span> ${escapeHTML(cmd)}`;
-    output.insertBefore(cmdLine, output.lastElementChild);
+    cmdLine.style.cssText = 'margin: 6px 0 2px;';
+    cmdLine.innerHTML = `<span style="color:#79c0ff; font-weight:600;">root@deols:~#</span> <span style="color:#f0f6fc;">${escapeHTML(cmd)}</span>`;
+    output.insertBefore(cmdLine, promptLine);
 
     input.value = '';
+    input.disabled = true;
 
     const result = await api('/terminal/exec', { method: 'POST', body: { command: cmd } });
+    input.disabled = false;
+    input.focus();
+
     if (result) {
       const resultEl = document.createElement('pre');
-      resultEl.style.cssText = 'margin:4px 0 12px;white-space:pre-wrap;word-break:break-all;color:#8b949e';
-      resultEl.textContent = result.stdout || result.stderr || '(no output)';
-      output.insertBefore(resultEl, output.lastElementChild);
+      resultEl.style.cssText = 'margin:2px 0 10px; white-space:pre-wrap; word-break:break-all; color:#8b949e; line-height:1.4;';
+      resultEl.textContent = result.stdout || result.stderr || '(command executed with no output)';
+      if (result.code !== 0) resultEl.style.color = '#f85149';
+      output.insertBefore(resultEl, promptLine);
     }
 
     output.scrollTop = output.scrollHeight;
@@ -4409,8 +4466,41 @@ window.saveServerTimezone = saveServerTimezone;
 window.noticeRestartOLS = noticeRestartOLS;
 window.noticeReloadServer = noticeReloadServer;
 window.initServerClock = initServerClock;
+window.navigateTo = navigateTo;
+window.showModal = showModal;
+window.closeModal = closeModal;
+window.openSiteManage = openSiteManage;
+window.purgeAllCache = purgeAllCache;
+window.renderTerminal = renderTerminal;
+window.checkAuth = checkAuth;
+window.showLogin = showLogin;
+window.showSetup = showSetup;
+window.showDashboard = showDashboard;
+window.hideAll = hideAll;
 
 // ─── Initialize ─────────────────────────────────────────────
 
 initTheme();
-setTimeout(() => checkAuth(), 800);
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    checkAuth();
+  });
+} else {
+  checkAuth();
+}
+
+// Emergency Failsafe: Never leave loading screen stuck
+setTimeout(() => {
+  const loading = document.getElementById('loading-screen');
+  if (loading && loading.style.display !== 'none' && !loading.classList.contains('fade-out')) {
+    const login = document.getElementById('login-screen');
+    const dash = document.getElementById('dashboard');
+    const setup = document.getElementById('setup-screen');
+    if (login && dash && setup && login.style.display === 'none' && dash.style.display === 'none' && setup.style.display === 'none') {
+      console.warn('DEOLS Failsafe triggered: Dismissing stuck loading screen');
+      showLogin();
+    }
+  }
+}, 3000);
+
