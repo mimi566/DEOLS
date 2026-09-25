@@ -406,10 +406,85 @@ export default async function sslRoutes(app) {
     }
   });
 
+  // ─── List SSL Overview for all Sites & Certificates ─────
+  app.get('/overview', async () => {
+    const sites = loadSites();
+    let certbotOutput = '';
+    try {
+      const res = await run(config.bin.certbot, ['certificates', '--quiet']);
+      certbotOutput = res.stdout || '';
+    } catch {}
+
+    const certbotCerts = parseCertbotOutput(certbotOutput);
+
+    const siteSSLList = [];
+    for (const site of sites) {
+      const domain = site.domain;
+      const liveDir = `/etc/letsencrypt/live/${domain}`;
+      const fullchain = join(liveDir, 'fullchain.pem');
+      const privkey = join(liveDir, 'privkey.pem');
+
+      let hasValidCert = existsSync(fullchain) && existsSync(privkey);
+      let sslType = 'none';
+      let domainsCovered = [domain];
+      let expiryText = 'Not Installed';
+      let daysRemaining = null;
+
+      if (hasValidCert) {
+        try {
+          const sanRes = await shell(`openssl x509 -in "${fullchain}" -noout -text 2>/dev/null | grep -A 1 "Subject Alternative Name" | tail -n 1`);
+          const enddateRes = await shell(`openssl x509 -in "${fullchain}" -noout -enddate 2>/dev/null`);
+
+          if (sanRes.stdout) {
+            const rawDomains = sanRes.stdout.split(',').map((d) => d.replace(/DNS:/gi, '').trim()).filter(Boolean);
+            if (rawDomains.length) domainsCovered = rawDomains;
+          }
+
+          const isWildcard = domainsCovered.some((d) => d.startsWith('*.')) || site.wildcard || site.sslType === 'wildcard';
+          sslType = isWildcard ? 'wildcard' : 'standard';
+
+          if (enddateRes.stdout) {
+            const dateStr = enddateRes.stdout.replace('notAfter=', '').trim();
+            const expDate = new Date(dateStr);
+            if (!isNaN(expDate.getTime())) {
+              const diffMs = expDate.getTime() - Date.now();
+              daysRemaining = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+              expiryText = `${expDate.toISOString().split('T')[0]} (${daysRemaining}d left)`;
+            }
+          }
+        } catch {
+          sslType = site.wildcard ? 'wildcard' : 'standard';
+        }
+      } else if (site.ssl) {
+        sslType = site.sslType || (site.wildcard ? 'wildcard' : 'standard');
+      }
+
+      siteSSLList.push({
+        domain,
+        ssl: hasValidCert || !!site.ssl,
+        sslType,
+        isWildcard: sslType === 'wildcard',
+        domainsCovered: domainsCovered.join(', '),
+        expiry: expiryText,
+        daysRemaining,
+        certPath: hasValidCert ? fullchain : null,
+      });
+    }
+
+    return {
+      sites: siteSSLList,
+      certificates: certbotCerts,
+      totalSites: sites.length,
+      securedSites: siteSSLList.filter((s) => s.ssl).length,
+      wildcardSites: siteSSLList.filter((s) => s.sslType === 'wildcard').length,
+    };
+  });
+
   // ─── List SSL Certificates ─────────────────────────────
   app.get('/certificates', async () => {
     const result = await run(config.bin.certbot, ['certificates', '--quiet']);
-    return { raw: result.stdout, certificates: parseCertbotOutput(result.stdout) };
+    const certs = parseCertbotOutput(result.stdout || '');
+    return { raw: result.stdout, certificates: certs };
   });
 
   // ─── Renew All Certificates ────────────────────────────

@@ -1921,7 +1921,10 @@ async function dropDbUser(user, host) {
 async function renderSSL(container) {
   container.innerHTML = `
     <div class="flex justify-between items-center mb-6">
-      <p class="text-muted">Manage Let's Encrypt SSL certificates (Standard & Cloudflare Wildcard)</p>
+      <div>
+        <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 4px;">SSL / TLS Certificates & Encryption</h2>
+        <p class="text-muted" style="font-size: 0.875rem;">Manage Let's Encrypt Standard SSL (HTTP-01) and Cloudflare Wildcard SSL (*.domain.com)</p>
+      </div>
       <div class="flex gap-3">
         <a href="https://dnschecker.org/" target="_blank" rel="noopener noreferrer" class="btn btn-secondary flex items-center gap-1" style="text-decoration:none; font-size: 13px;" title="Check global DNS propagation">
           <svg viewBox="0 0 20 20" fill="currentColor" style="width:14px;height:14px;"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM4.332 8.027a6.012 6.012 0 011.912-2.706C6.512 5.73 6.974 6 7.5 6A1.5 1.5 0 019 7.5V8a2 2 0 004 0 2 2 0 011.523-1.943A5.977 5.977 0 0116 10c0 .34-.028.675-.083 1H15a2 2 0 00-2 2v2.197A5.973 5.973 0 0110 16v-.2a2 2 0 00-1.664-1.973l-.403-.067A2 2 0 016 11.8v-.8a2 2 0 00-.916-1.688l-.752-.485z"/></svg>
@@ -1931,50 +1934,147 @@ async function renderSSL(container) {
         <button class="btn btn-secondary" onclick="renewAllSSL()">Renew All</button>
       </div>
     </div>
+
+    <!-- Quick SSL Stats Grid -->
+    <div class="stats-grid mb-6" id="ssl-stats-grid">
+      <div class="stat-card">
+        <div class="stat-card-header"><span class="stat-card-label">Total Sites</span></div>
+        <div class="stat-card-value" id="ssl-total-sites">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-header"><span class="stat-card-label">Secured Sites (HTTPS)</span></div>
+        <div class="stat-card-value text-success" id="ssl-secured-sites">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-header"><span class="stat-card-label">Wildcard SSLs (*.)</span></div>
+        <div class="stat-card-value text-primary" id="ssl-wildcard-sites">—</div>
+      </div>
+    </div>
+
+    <!-- Domain SSL Status Overview Table -->
+    <div class="card mb-6">
+      <div class="card-header">
+        <h2 class="card-title">🌐 Sites & SSL Encryption Status</h2>
+      </div>
+      <div class="card-body" id="site-ssl-table-wrap">
+        <p class="text-muted">Loading sites SSL status…</p>
+      </div>
+    </div>
+
+    <!-- Raw Let's Encrypt Certificate Vault -->
     <div class="card">
-      <div class="card-header"><h2 class="card-title">Certificates</h2></div>
-      <div class="card-body" id="ssl-list"><p class="text-muted">Loading certificates…</p></div>
+      <div class="card-header"><h2 class="card-title">📜 Let's Encrypt Certificate Vault</h2></div>
+      <div class="card-body" id="ssl-list"><p class="text-muted">Loading certificate files…</p></div>
     </div>
   `;
 
-  const data = await api('/ssl/certificates');
-  const el = document.getElementById('ssl-list');
+  const data = await api('/ssl/overview');
+  const siteWrap = document.getElementById('site-ssl-table-wrap');
+  const certWrap = document.getElementById('ssl-list');
 
-  if (data?.certificates?.length) {
-    el.innerHTML = `
-      <div class="table-wrap"><table class="table">
-        <thead><tr><th>Name</th><th>Domains</th><th>Expiry</th><th>Actions</th></tr></thead>
-        <tbody>${data.certificates.map((c) => `
-          <tr>
-            <td><strong>${escapeHTML(c.name || '—')}</strong></td>
-            <td class="text-sm">${escapeHTML(c.domains || '—')}</td>
-            <td class="text-sm">${escapeHTML(c.expiry || '—')}</td>
-            <td><button class="btn btn-sm btn-danger" onclick="revokeSSL('${c.name}')">Revoke</button></td>
-          </tr>
-        `).join('')}</tbody>
-      </table></div>
-    `;
+  if (data) {
+    document.getElementById('ssl-total-sites').textContent = data.totalSites ?? '0';
+    document.getElementById('ssl-secured-sites').textContent = data.securedSites ?? '0';
+    document.getElementById('ssl-wildcard-sites').textContent = data.wildcardSites ?? '0';
+
+    // 1. Render Domain SSL Status Table
+    if (data.sites?.length) {
+      siteWrap.innerHTML = `
+        <div class="table-wrap"><table class="table">
+          <thead>
+            <tr>
+              <th>Site Domain</th>
+              <th>SSL Status</th>
+              <th>SSL Type</th>
+              <th>Hostnames Covered</th>
+              <th>Expiry & Validity</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>${data.sites.map((s) => {
+            const isInstalled = s.ssl;
+            const isWildcard = s.sslType === 'wildcard';
+
+            const statusBadge = isInstalled
+              ? `<span class="badge badge-success">● Active & Secure</span>`
+              : `<span class="badge badge-danger">○ Not Installed</span>`;
+
+            const typeBadge = isInstalled
+              ? (isWildcard
+                  ? `<span class="badge badge-primary" style="background:rgba(139,92,246,0.15); color:#a78bfa; border:1px solid rgba(139,92,246,0.3);">🌟 Wildcard SSL (*.)</span>`
+                  : `<span class="badge badge-info" style="background:rgba(56,189,248,0.15); color:#38bdf8; border:1px solid rgba(56,189,248,0.3);">🔒 Standard SSL</span>`)
+              : `<span class="text-muted text-xs">None (HTTP only)</span>`;
+
+            return `
+              <tr>
+                <td><strong class="text-mono">${escapeHTML(s.domain)}</strong></td>
+                <td>${statusBadge}</td>
+                <td>${typeBadge}</td>
+                <td class="text-sm text-mono" style="max-width:240px; overflow:hidden; text-overflow:ellipsis;">${escapeHTML(s.domainsCovered)}</td>
+                <td class="text-sm">${escapeHTML(s.expiry)}</td>
+                <td>
+                  <div class="flex gap-2" style="flex-wrap:wrap">
+                    ${!isInstalled ? `
+                      <button class="btn btn-sm btn-primary" onclick="showIssueSSLModal('${escapeHTML(s.domain)}', 'standard')">🔒 Issue Standard</button>
+                      <button class="btn btn-sm btn-secondary" onclick="showIssueSSLModal('${escapeHTML(s.domain)}', 'wildcard')">🌟 Issue Wildcard</button>
+                    ` : `
+                      ${!isWildcard ? `
+                        <button class="btn btn-sm btn-secondary" onclick="showIssueSSLModal('${escapeHTML(s.domain)}', 'wildcard')" title="Upgrade to wildcard certificate">🌟 Upgrade Wildcard</button>
+                      ` : `
+                        <button class="btn btn-sm btn-secondary" onclick="showIssueSSLModal('${escapeHTML(s.domain)}', 'wildcard')">🔄 Reissue</button>
+                      `}
+                      <button class="btn btn-sm btn-danger" onclick="revokeSSL('${escapeHTML(s.domain)}')">Revoke</button>
+                    `}
+                  </div>
+                </td>
+              </tr>
+            `;
+          }).join('')}</tbody>
+        </table></div>
+      `;
+    } else {
+      siteWrap.innerHTML = '<p class="text-muted">No sites found. Add a site in the Sites menu first.</p>';
+    }
+
+    // 2. Render Certbot Certificate Vault Table
+    if (data.certificates?.length) {
+      certWrap.innerHTML = `
+        <div class="table-wrap"><table class="table">
+          <thead><tr><th>Cert Name</th><th>Covered Domains</th><th>Expiry Date</th><th>Actions</th></tr></thead>
+          <tbody>${data.certificates.map((c) => `
+            <tr>
+              <td><strong class="text-mono">${escapeHTML(c.name || '—')}</strong></td>
+              <td class="text-sm text-mono">${escapeHTML(c.domains || '—')}</td>
+              <td class="text-sm">${escapeHTML(c.expiry || '—')}</td>
+              <td><button class="btn btn-sm btn-danger" onclick="revokeSSL('${escapeHTML(c.name)}')">Revoke</button></td>
+            </tr>
+          `).join('')}</tbody>
+        </table></div>
+      `;
+    } else {
+      certWrap.innerHTML = '<p class="text-muted">No Let\'s Encrypt certificates stored in vault.</p>';
+    }
   } else {
-    el.innerHTML = '<div class="empty-state"><h3>No certificates found</h3><p>Issue your first SSL certificate</p></div>';
+    siteWrap.innerHTML = '<p class="text-muted">Could not load SSL overview.</p>';
   }
 }
 
 let currentSSLTab = 'wildcard';
 
-function showIssueSSLModal() {
-  currentSSLTab = 'wildcard';
+function showIssueSSLModal(prefillDomain = '', prefillTab = 'wildcard') {
+  currentSSLTab = prefillTab || 'wildcard';
   showModal('Issue SSL Certificate', `
     <div class="tabs mb-4 flex gap-2" style="border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.1)); padding-bottom: 8px;">
-      <button class="btn btn-sm btn-primary" id="ssl-tab-wildcard-btn" onclick="switchSSLTab('wildcard')">Wildcard SSL (Cloudflare DNS)</button>
-      <button class="btn btn-sm btn-secondary" id="ssl-tab-standard-btn" onclick="switchSSLTab('standard')">Standard SSL (HTTP-01)</button>
+      <button class="btn btn-sm ${currentSSLTab === 'wildcard' ? 'btn-primary' : 'btn-secondary'}" id="ssl-tab-wildcard-btn" onclick="switchSSLTab('wildcard')">Wildcard SSL (Cloudflare DNS)</button>
+      <button class="btn btn-sm ${currentSSLTab === 'standard' ? 'btn-primary' : 'btn-secondary'}" id="ssl-tab-standard-btn" onclick="switchSSLTab('standard')">Standard SSL (HTTP-01)</button>
     </div>
 
     <!-- Wildcard SSL Form -->
-    <div id="ssl-wildcard-panel" class="flex flex-col gap-4">
+    <div id="ssl-wildcard-panel" class="flex flex-col gap-4" style="display:${currentSSLTab === 'wildcard' ? 'flex' : 'none'};">
       <div class="form-group">
         <label>Base Domain</label>
-        <input type="text" id="ssl-wildcard-domain" placeholder="example.com" required>
-        <span class="text-xs text-muted" style="margin-top: 4px; display: block;">Certificate covers both <code>example.com</code> and <code>*.example.com</code></span>
+        <input type="text" id="ssl-wildcard-domain" placeholder="example.com" value="${escapeHTML(prefillDomain)}" required>
+        <span class="text-xs text-muted" style="margin-top: 4px; display: block;">Certificate covers both <code>${escapeHTML(prefillDomain || 'example.com')}</code> and <code>*.${escapeHTML(prefillDomain || 'example.com')}</code></span>
       </div>
 
       <div class="form-group">
@@ -2012,21 +2112,21 @@ function showIssueSSLModal() {
     </div>
 
     <!-- Standard SSL Form -->
-    <div id="ssl-standard-panel" class="flex flex-col gap-4" style="display:none">
+    <div id="ssl-standard-panel" class="flex flex-col gap-4" style="display:${currentSSLTab === 'standard' ? 'flex' : 'none'}">
       <div class="form-group">
         <label>Domain</label>
-        <input type="text" id="ssl-domain" placeholder="example.com" required>
+        <input type="text" id="ssl-domain" placeholder="example.com" value="${escapeHTML(prefillDomain)}" required>
       </div>
       <div class="form-group">
         <label>Email (for Let's Encrypt)</label>
-        <input type="email" id="ssl-email" placeholder="admin@example.com">
+        <input type="email" id="ssl-email" placeholder="admin@${escapeHTML(prefillDomain || 'example.com')}">
       </div>
       <div class="flex gap-4 items-center">
         <label class="toggle">
           <input type="checkbox" id="ssl-www" checked>
           <span class="toggle-slider"></span>
         </label>
-        <span class="text-sm">Include www subdomain</span>
+        <span class="text-sm">Include www subdomain (if DNS points to this server)</span>
       </div>
     </div>
 
@@ -2034,11 +2134,11 @@ function showIssueSSLModal() {
     <div id="ssl-fallback-alert" style="display:none;"></div>
   `, `
     <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-    <button class="btn btn-secondary" id="btn-test-cf" onclick="testCloudflareConnection()">
+    <button class="btn btn-secondary" id="btn-test-cf" onclick="testCloudflareConnection()" style="display:${currentSSLTab === 'wildcard' ? 'inline-flex' : 'none'};">
       <svg viewBox="0 0 20 20" fill="currentColor" style="width:14px;height:14px;display:inline-block;vertical-align:-2px;"><path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z"/></svg>
       Test Connection
     </button>
-    <button class="btn btn-primary" id="btn-issue-ssl" onclick="handleIssueSSLSubmit()">Install Wildcard SSL</button>
+    <button class="btn btn-primary" id="btn-issue-ssl" onclick="handleIssueSSLSubmit()">${currentSSLTab === 'wildcard' ? 'Install Wildcard SSL' : 'Issue Standard Certificate'}</button>
   `);
 }
 
