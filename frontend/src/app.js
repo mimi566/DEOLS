@@ -1751,27 +1751,94 @@ async function renderDatabases(container) {
 }
 
 function showNewDbModal() {
-  showModal('Create Database', `
+  showModal('Create Database & User', `
     <div class="flex flex-col gap-4">
       <div class="form-group">
         <label>Database Name</label>
-        <input type="text" id="new-db-name" placeholder="my_database" required>
+        <input type="text" id="new-db-name" placeholder="wp_mysite" required>
+      </div>
+
+      <div class="flex items-center gap-2" style="margin-top: 4px;">
+        <input type="checkbox" id="new-db-with-user" checked onchange="document.getElementById('new-db-user-fields').style.display = this.checked ? 'flex' : 'none';">
+        <label for="new-db-with-user" style="margin:0; font-size:13px; font-weight:600; cursor:pointer;">Create Database User & Grant Full Privileges (Recommended for WP)</label>
+      </div>
+
+      <div id="new-db-user-fields" class="flex flex-col gap-3" style="background:rgba(0,0,0,0.2); padding:12px; border-radius:8px; border:1px solid var(--border-color,#334155);">
+        <div class="form-group">
+          <label>Database Username</label>
+          <input type="text" id="new-db-user" placeholder="u_mysite">
+        </div>
+        <div class="form-group">
+          <label>Database Password</label>
+          <div style="display:flex; gap:8px;">
+            <input type="text" id="new-db-pass" placeholder="Password" style="flex:1;">
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-gen-db-full-pass">Generate</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Auto-Sync to WordPress Site (Optional)</label>
+          <input type="text" id="new-db-sync-domain" placeholder="example.com">
+          <span class="text-xs text-muted mt-1">If entered, automatically updates DB_NAME, DB_USER, and DB_PASSWORD in this site's wp-config.php!</span>
+        </div>
       </div>
     </div>
   `, `
     <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-    <button class="btn btn-primary" onclick="createDb()">Create Database</button>
+    <button class="btn btn-primary" id="btn-submit-new-db">Create Database</button>
   `);
-}
 
-async function createDb() {
-  const name = document.getElementById('new-db-name').value;
-  const result = await api('/databases', { method: 'POST', body: { name } });
-  if (result?.success) {
-    toast('Database created successfully!', 'success');
-    closeModal();
-    navigateTo('databases');
-  } else toast(result?.error || 'Failed to create database', 'error');
+  document.getElementById('btn-gen-db-full-pass')?.addEventListener('click', () => {
+    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let pass = '';
+    for (let i = 0; i < 20; i++) pass += chars.charAt(Math.floor(Math.random() * chars.length));
+    document.getElementById('new-db-pass').value = pass;
+  });
+
+  // Auto-fill username when typing db name
+  document.getElementById('new-db-name')?.addEventListener('input', (e) => {
+    const userField = document.getElementById('new-db-user');
+    if (userField && (!userField.value || userField.value.startsWith('u_'))) {
+      userField.value = 'u_' + e.target.value.replace(/^wp_/, '').substring(0, 14);
+    }
+  });
+
+  document.getElementById('btn-submit-new-db')?.addEventListener('click', async () => {
+    const dbName = document.getElementById('new-db-name').value.trim();
+    const withUser = document.getElementById('new-db-with-user').checked;
+
+    if (!dbName) {
+      toast('Please enter a database name', 'warning');
+      return;
+    }
+
+    if (withUser) {
+      const dbUser = document.getElementById('new-db-user').value.trim() || ('u_' + dbName.substring(0, 14));
+      const password = document.getElementById('new-db-pass').value.trim();
+      const syncDomain = document.getElementById('new-db-sync-domain').value.trim();
+
+      const res = await api('/databases/create-with-user', {
+        method: 'POST',
+        body: { dbName, dbUser, password, syncDomain: syncDomain || undefined },
+      });
+
+      if (res?.success) {
+        toast(`Database '${res.database}' and user '${res.username}' created!`, 'success');
+        closeModal();
+        navigateTo('databases');
+      } else {
+        toast(res?.error || 'Failed to create database', 'error');
+      }
+    } else {
+      const res = await api('/databases', { method: 'POST', body: { name: dbName } });
+      if (res?.success) {
+        toast('Database created successfully!', 'success');
+        closeModal();
+        navigateTo('databases');
+      } else {
+        toast(res?.error || 'Failed to create database', 'error');
+      }
+    }
+  });
 }
 
 function showNewDbUserModal() {

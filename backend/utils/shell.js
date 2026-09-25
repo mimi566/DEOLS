@@ -74,6 +74,19 @@ export async function run(binary, args = [], opts = {}) {
 }
 
 /**
+ * Execute SQL directly in MariaDB / MySQL without shell escaping risks.
+ * @param {string} sql - SQL query string
+ * @returns {Promise<{stdout: string, stderr: string, code: number}>}
+ */
+export async function execSql(sql) {
+  let res = await run('mysql', ['-u', 'root', '-e', sql]);
+  if (res.code !== 0) {
+    res = await run('mariadb', ['-u', 'root', '-e', sql]);
+  }
+  return res;
+}
+
+/**
  * Spawn a long-running process and stream output.
  * @param {string} binary - Binary path
  * @param {string[]} args - Arguments
