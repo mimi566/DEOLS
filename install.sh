@@ -56,7 +56,7 @@ echo -e "${CYAN}[2/8] Installing dependencies…${NC}"
 apt-get install -y -qq \
   curl wget gnupg2 ca-certificates lsb-release apt-transport-https \
   software-properties-common git unzip zip tar \
-  ufw fail2ban \
+  ufw fail2ban redis-server \
   build-essential python3 python3-venv python3-pip \
   certbot python3-certbot-dns-cloudflare
 
@@ -100,9 +100,9 @@ systemctl enable lsws 2>/dev/null || true
 systemctl start lsws 2>/dev/null || true
 echo -e "${GREEN}✓ OpenLiteSpeed installed${NC}"
 
-# ─── Install MariaDB ────────────────────────────────────
+# ─── Install MariaDB & Redis ────────────────────────────
 
-echo -e "${CYAN}[5/8] Installing MariaDB…${NC}"
+echo -e "${CYAN}[5/8] Installing MariaDB & Redis Cache…${NC}"
 if ! command -v mysql &>/dev/null; then
   apt-get install -y -qq mariadb-server mariadb-client
   systemctl enable mariadb 2>/dev/null || true
@@ -118,6 +118,13 @@ FLUSH PRIVILEGES;
 EOF
 fi
 echo -e "${GREEN}✓ MariaDB installed and secured${NC}"
+
+if ! command -v redis-server &>/dev/null; then
+  apt-get install -y -qq redis-server 2>/dev/null || true
+fi
+systemctl enable redis-server 2>/dev/null || true
+systemctl start redis-server 2>/dev/null || true
+echo -e "${GREEN}✓ Redis Cache Server installed and active${NC}"
 
 # ─── Install WP-CLI ──────────────────────────────────────
 

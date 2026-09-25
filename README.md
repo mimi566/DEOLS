@@ -40,7 +40,7 @@ bash install.sh
 
 The automated installer will:
 - Update Debian packages & install essential utilities
-- Install Node.js 20.x LTS, OpenLiteSpeed, LSPHP 8.3 & 8.2, MariaDB 10.11+, WP-CLI, Certbot & Cloudflare DNS plugin
+- Install Node.js 20.x LTS, OpenLiteSpeed, LSPHP 8.3 & 8.2, MariaDB 10.11+, Redis Cache Server, WP-CLI, Certbot & Cloudflare DNS plugin
 - Configure UFW firewall & Fail2ban security jails
 - Launch the DEOLS daemon as a systemd service on port `8443`
 - **Generate secure root admin credentials and print them in your terminal**
