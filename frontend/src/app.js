@@ -1740,6 +1740,8 @@ async function renderDatabases(container) {
         `).join('')}</tbody>
       </table></div>
     ` : '<p class="text-muted">No databases found</p>';
+  } else {
+    document.getElementById('db-list').innerHTML = `<p class="text-danger">Failed to load databases: ${escapeHTML(dbs?.error || 'Unknown error')}</p>`;
   }
 
   if (users?.users) {
@@ -1760,6 +1762,8 @@ async function renderDatabases(container) {
         `).join('')}</tbody>
       </table></div>
     ` : '<p class="text-muted">No users found</p>';
+  } else {
+    document.getElementById('db-users-list').innerHTML = `<p class="text-danger">Failed to load users: ${escapeHTML(users?.error || 'Unknown error')}</p>`;
   }
 }
 

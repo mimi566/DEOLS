@@ -7,7 +7,7 @@ export default async function databaseRoutes(app) {
   // ─── List Databases ────────────────────────────────────
   app.get('/', async (request, reply) => {
     const result = await execSql(
-      `SELECT SCHEMA_NAME, DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN ('information_schema','mysql','performance_schema','sys') -B -N`
+      `SELECT SCHEMA_NAME, DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN ('information_schema','mysql','performance_schema','sys');`
     );
     if (result.code !== 0) {
       return reply.code(500).send({ error: 'Failed to list databases', details: result.stderr });
@@ -118,7 +118,7 @@ export default async function databaseRoutes(app) {
   // ─── List Database Users ───────────────────────────────
   app.get('/users', async (request, reply) => {
     const result = await execSql(
-      `SELECT User, Host FROM mysql.user WHERE User NOT IN ('root','mysql.sys','mysql.session','mysql.infoschema','mariadb.sys','debian-sys-maint') -B -N`
+      `SELECT User, Host FROM mysql.user WHERE User NOT IN ('root','mysql.sys','mysql.session','mysql.infoschema','mariadb.sys','debian-sys-maint');`
     );
 
     const users = (result.stdout || '')

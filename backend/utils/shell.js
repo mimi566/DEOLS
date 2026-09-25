@@ -82,10 +82,10 @@ export async function run(binary, args = [], opts = {}) {
  * @param {string} sql - SQL query string
  * @returns {Promise<{stdout: string, stderr: string, code: number}>}
  */
-export async function execSql(sql) {
-  let res = await run('mysql', ['-u', 'root', '-e', sql]);
+export async function execSql(sql, opts = {}) {
+  let res = await run('mysql', ['-u', 'root', '-B', '-N', '-e', sql], opts);
   if (res.code !== 0) {
-    res = await run('mariadb', ['-u', 'root', '-e', sql]);
+    res = await run('mariadb', ['-u', 'root', '-B', '-N', '-e', sql], opts);
   }
   return res;
 }
