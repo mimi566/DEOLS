@@ -212,6 +212,15 @@ async function bootstrap() {
       `╚══════════════════════════════════════════════╝`
     );
 
+    // Auto-repair OpenLiteSpeed listeners (remap 8088 to 80, setup 443) and sync virtual hosts
+    try {
+      const { syncAllVirtualHosts } = await import('./utils/ols-config.js');
+      syncAllVirtualHosts();
+      app.log.info('✓ OpenLiteSpeed dual listeners (Port 80 & 443) and Virtual Hosts synchronized');
+    } catch (e) {
+      app.log.warn(`OLS initial sync warning: ${e.message}`);
+    }
+
     // Initialize and start server-side automation & cron engine
     startAutomationDaemon();
     app.log.info('✓ Server-side automation daemon started (WP-Cron, SSL renewal, OLS maintenance)');

@@ -18,14 +18,18 @@ export function ensureOlsListeners(httpdConfPath = null) {
   let content = readFileSync(confPath, 'utf-8');
   let modified = false;
 
-  // 1. Ensure listener Default (Port 80) exists
-  const hasPort80Listener = /listener\s+Default\s*\{/i.test(content) || /listener\s+[^\r\n]+\s*\{[^}]*address\s+[*0-9.:]*:80\b/s.test(content);
-  if (!hasPort80Listener) {
-    // If OLS has a default listener on 8088, remap it to 80
-    if (/listener\s+Default\s*\{[^}]*address\s+[*0-9.:]*:8088/s.test(content)) {
-      content = content.replace(/(listener\s+Default\s*\{[^}]*address\s+)[*0-9.:]*:8088/s, '$1*:80');
+  // 1. Ensure listener Default (Port 80) is listening on *:80 (convert default 8088 to 80)
+  if (/listener\s+Default\s*\{/i.test(content)) {
+    // If listener Default contains 8088, replace with 80
+    if (/listener\s+Default\s*\{[^}]*8088/s.test(content)) {
+      content = content.replace(/(listener\s+Default\s*\{[^}]*address\s+)[*0-9.:]*:8088/is, '$1*:80');
+      content = content.replace(/(listener\s+Default\s*\{[^}]*binding\s+)[*0-9.:]*:8088/is, '$1*:80');
       modified = true;
-    } else {
+    }
+  } else {
+    // If no Default listener exists, check if any listener on port 80 exists
+    const hasAnyPort80 = /listener\s+[^\r\n]+\s*\{[^}]*address\s+[*0-9.:]*:80\b/s.test(content);
+    if (!hasAnyPort80) {
       const defaultPort80Block = `
 listener Default {
   address                 *:80
@@ -41,11 +45,9 @@ listener Default {
   // 2. Clean up conflicting or empty DefaultHTTPS listener if HTTPS listener already exists
   if (/listener\s+DefaultHTTPS\s*\{/i.test(content)) {
     if (/listener\s+HTTPS\s*\{/i.test(content)) {
-      // Both exist: remove duplicate DefaultHTTPS block
       content = content.replace(/\n?listener\s+DefaultHTTPS\s*\{[^}]*\}/s, '');
       modified = true;
     } else {
-      // Rename DefaultHTTPS to canonical HTTPS
       content = content.replace(/listener\s+DefaultHTTPS\s*\{/i, 'listener HTTPS {');
       modified = true;
     }
