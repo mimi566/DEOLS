@@ -1,0 +1,40 @@
+[Unit]
+Description=DEOLS - Debian OpenLiteSpeed Management Panel
+Documentation=https://github.com/deols/deols
+After=network-online.target mariadb.service lsws.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/deols
+ExecStart=/usr/bin/node /opt/deols/backend/index.js
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Security Hardening
+NoNewPrivileges=false
+ProtectSystem=false
+PrivateTmp=true
+ProtectHome=read-only
+
+# Resource Limits
+MemoryMax=256M
+MemoryHigh=128M
+CPUQuota=50%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=deols
+
+# Environment
+Environment=NODE_ENV=production
+Environment=DEOLS_PORT=8443
+EnvironmentFile=-/opt/deols/.env
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,78 @@
+# ─────────────────────────────────────────────────────────────
+# DEOLS — OpenLiteSpeed VHost Configuration Template
+# Variables: {{DOMAIN}}, {{DOC_ROOT}}, {{LOGS_DIR}}, {{PHP_VERSION}}
+# ─────────────────────────────────────────────────────────────
+
+docRoot                   {{DOC_ROOT}}
+vhDomain                  {{DOMAIN}}
+vhAliases                 www.{{DOMAIN}}
+adminEmails               admin@{{DOMAIN}}
+enableGzip                1
+enableBr                  1
+
+index {
+  useServer               0
+  indexFiles               index.php, index.html
+}
+
+errorlog {{LOGS_DIR}}/error.log {
+  useServer               0
+  logLevel                WARN
+  rollingSize             10M
+}
+
+accesslog {{LOGS_DIR}}/access.log {
+  useServer               0
+  logFormat               "%h %l %u %t \"%r\" %>s %b"
+  rollingSize             10M
+  keepDays                30
+}
+
+scripthandler {
+  add                     lsapi:lsphp{{PHP_VERSION}} php
+}
+
+extprocessor lsphp{{PHP_VERSION}} {
+  type                    lsapi
+  address                 uds://tmp/lshttpd/lsphp{{PHP_VERSION}}.sock
+  maxConns                10
+  env                     PHP_LSAPI_CHILDREN=10
+  initTimeout             60
+  retryTimeout            0
+  pcKeepAliveTimeout      60
+  respBuffer              0
+  autoStart               2
+  path                    /usr/local/lsws/lsphp{{PHP_VERSION}}/bin/lsphp
+  backlog                 100
+  instances               1
+  priority                0
+  memSoftLimit            2047M
+  memHardLimit            2047M
+  procSoftLimit           1400
+  procHardLimit           1500
+}
+
+rewrite {
+  enable                  1
+  autoLoadHtaccess        1
+  rules <<<END_rules
+RewriteEngine On
+RewriteRule .* - [E=Cache-Control:no-autoflush]
+RewriteRule ^/wp-content/cache/ - [L]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule . /index.php [L]
+END_rules
+}
+
+context / {
+  location                {{DOC_ROOT}}
+  allowBrowse             1
+  extraHeaders            <<<END_extraHeaders
+    X-Frame-Options SAMEORIGIN
+    X-Content-Type-Options nosniff
+    X-XSS-Protection 1;mode=block
+    Referrer-Policy strict-origin-when-cross-origin
+    Permissions-Policy interest-cohort=()
+END_extraHeaders
+}

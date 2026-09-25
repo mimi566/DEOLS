@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="DEOLS — Ultra-lightweight Debian OpenLiteSpeed Management Panel for high-speed WordPress hosting">
+  <title>DEOLS — Server Management Panel</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="src/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>⚡</text></svg>">
+</head>
+<body>
+  <div id="app">
+    <!-- Loading Screen -->
+    <div id="loading-screen" class="loading-screen">
+      <div class="loading-content">
+        <div class="loading-logo">
+          <svg class="loading-icon" viewBox="0 0 48 48" fill="none">
+            <path d="M26 4L8 28h14l-4 16 18-24H22l4-16z" fill="url(#bolt-grad)" stroke="rgba(255,255,255,0.3)" stroke-width="1.5"/>
+            <defs>
+              <linearGradient id="bolt-grad" x1="8" y1="4" x2="36" y2="44">
+                <stop offset="0%" stop-color="#6366f1"/>
+                <stop offset="50%" stop-color="#8b5cf6"/>
+                <stop offset="100%" stop-color="#a78bfa"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
+        <h1 class="loading-title">DEOLS</h1>
+        <p class="loading-subtitle">Initializing panel…</p>
+        <div class="loading-bar"><div class="loading-bar-fill"></div></div>
+      </div>
+    </div>
+
+    <!-- Setup Screen -->
+    <div id="setup-screen" class="auth-screen" style="display:none">
+      <div class="auth-card">
+        <div class="auth-header">
+          <svg class="auth-logo" viewBox="0 0 48 48" fill="none">
+            <path d="M26 4L8 28h14l-4 16 18-24H22l4-16z" fill="url(#bolt-grad2)" stroke="rgba(255,255,255,0.2)" stroke-width="1.5"/>
+            <defs><linearGradient id="bolt-grad2" x1="8" y1="4" x2="36" y2="44"><stop offset="0%" stop-color="#6366f1"/><stop offset="100%" stop-color="#a78bfa"/></linearGradient></defs>
+          </svg>
+          <h1>Welcome to DEOLS</h1>
+          <p>Create your admin account to get started</p>
+        </div>
+        <form id="setup-form" class="auth-form">
+          <div class="form-group">
+            <label for="setup-username">Username</label>
+            <input type="text" id="setup-username" placeholder="admin" required autocomplete="username">
+          </div>
+          <div class="form-group">
+            <label for="setup-email">Email</label>
+            <input type="email" id="setup-email" placeholder="admin@example.com">
+          </div>
+          <div class="form-group">
+            <label for="setup-password">Password</label>
+            <input type="password" id="setup-password" placeholder="••••••••••••" required minlength="8" autocomplete="new-password">
+          </div>
+          <div class="form-group">
+            <label for="setup-password2">Confirm Password</label>
+            <input type="password" id="setup-password2" placeholder="••••••••••••" required minlength="8" autocomplete="new-password">
+          </div>
+          <button type="submit" class="btn btn-primary btn-full" id="setup-btn">
+            <span>Create Account & Enter Panel</span>
+            <svg viewBox="0 0 20 20" fill="currentColor" class="btn-icon"><path fill-rule="evenodd" d="M10.293 5.293a1 1 0 011.414 0l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414-1.414L12.586 11H5a1 1 0 110-2h7.586l-2.293-2.293a1 1 0 010-1.414z"/></svg>
+          </button>
+          <p id="setup-error" class="form-error"></p>
+        </form>
+      </div>
+    </div>
+
+    <!-- Login Screen -->
+    <div id="login-screen" class="auth-screen" style="display:none">
+      <div class="auth-card">
+        <div class="auth-header">
+          <svg class="auth-logo" viewBox="0 0 48 48" fill="none">
+            <path d="M26 4L8 28h14l-4 16 18-24H22l4-16z" fill="url(#bolt-grad3)" stroke="rgba(255,255,255,0.2)" stroke-width="1.5"/>
+            <defs><linearGradient id="bolt-grad3" x1="8" y1="4" x2="36" y2="44"><stop offset="0%" stop-color="#6366f1"/><stop offset="100%" stop-color="#a78bfa"/></linearGradient></defs>
+          </svg>
+          <h1>DEOLS Panel</h1>
+          <p>Sign in to manage your server</p>
+        </div>
+        <form id="login-form" class="auth-form">
+          <div class="form-group">
+            <label for="login-username">Username</label>
+            <input type="text" id="login-username" placeholder="admin" required autocomplete="username">
+          </div>
+          <div class="form-group">
+            <label for="login-password">Password</label>
+            <input type="password" id="login-password" placeholder="••••••••••••" required autocomplete="current-password">
+          </div>
+          <button type="submit" class="btn btn-primary btn-full" id="login-btn">
+            <span>Sign In</span>
+            <svg viewBox="0 0 20 20" fill="currentColor" class="btn-icon"><path fill-rule="evenodd" d="M3 3a1 1 0 011 1v12a1 1 0 11-2 0V4a1 1 0 011-1zm7.707 3.293a1 1 0 010 1.414L9.414 9H17a1 1 0 110 2H9.414l1.293 1.293a1 1 0 01-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0z"/></svg>
+          </button>
+          <p id="login-error" class="form-error"></p>
+        </form>
+      </div>
+    </div>
+
+    <!-- Main Dashboard Shell -->
+    <div id="dashboard" class="dashboard" style="display:none">
+      <!-- Sidebar -->
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+          <div class="sidebar-brand">
+            <svg class="brand-icon" viewBox="0 0 48 48" fill="none">
+              <path d="M26 4L8 28h14l-4 16 18-24H22l4-16z" fill="url(#bolt-grad4)" stroke="rgba(255,255,255,0.2)" stroke-width="1"/>
+              <defs><linearGradient id="bolt-grad4" x1="8" y1="4" x2="36" y2="44"><stop offset="0%" stop-color="#6366f1"/><stop offset="100%" stop-color="#a78bfa"/></linearGradient></defs>
+            </svg>
+            <span class="brand-text">DEOLS</span>
+          </div>
+          <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar">
+            <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 10a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 15a1 1 0 011-1h6a1 1 0 110 2H4a1 1 0 01-1-1z"/></svg>
+          </button>
+        </div>
+
+        <nav class="sidebar-nav">
+          <div class="nav-section">
+            <span class="nav-section-title">Overview</span>
+            <a href="#" class="nav-item active" data-page="dashboard" id="nav-dashboard">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/></svg>
+              <span>Dashboard</span>
+            </a>
+          </div>
+
+          <div class="nav-section">
+            <span class="nav-section-title">Hosting</span>
+            <a href="#" class="nav-item" data-page="sites" id="nav-sites">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4.083 9h1.946c.089-1.546.383-2.97.837-4.118A6.004 6.004 0 004.083 9zM10 2a8 8 0 100 16 8 8 0 000-16zm0 2c-.076 0-.232.032-.465.262-.238.234-.497.623-.737 1.182-.389.907-.673 2.142-.766 3.556h3.936c-.093-1.414-.377-2.649-.766-3.556-.24-.56-.5-.948-.737-1.182C10.232 4.032 10.076 4 10 4zm3.971 5c-.089-1.546-.383-2.97-.837-4.118A6.004 6.004 0 0115.917 9h-1.946zm-2.003 2H8.032c.093 1.414.377 2.649.766 3.556.24.56.5.948.737 1.182.233.23.389.262.465.262.076 0 .232-.032.465-.262.238-.234.497-.623.737-1.182.389-.907.673-2.142.766-3.556zm1.166 4.118c.454-1.147.748-2.572.837-4.118h1.946a6.004 6.004 0 01-2.783 4.118zm-6.268 0C6.412 13.97 6.118 12.546 6.03 11H4.083a6.004 6.004 0 002.783 4.118z"/></svg>
+              <span>Sites</span>
+            </a>
+            <a href="#" class="nav-item" data-page="databases" id="nav-databases">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path d="M3 12v3c0 1.657 3.134 3 7 3s7-1.343 7-3v-3c0 1.657-3.134 3-7 3s-7-1.343-7-3z"/><path d="M3 7v3c0 1.657 3.134 3 7 3s7-1.343 7-3V7c0 1.657-3.134 3-7 3S3 8.657 3 7z"/><path d="M17 5c0 1.657-3.134 3-7 3S3 6.657 3 5s3.134-3 7-3 7 1.343 7 3z"/></svg>
+              <span>Databases</span>
+            </a>
+            <a href="#" class="nav-item" data-page="ssl" id="nav-ssl">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z"/></svg>
+              <span>SSL / TLS</span>
+            </a>
+            <a href="#" class="nav-item" data-page="files" id="nav-files">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/></svg>
+              <span>File Manager</span>
+            </a>
+          </div>
+
+          <div class="nav-section">
+            <span class="nav-section-title">Server</span>
+            <a href="#" class="nav-item" data-page="services" id="nav-services">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z"/></svg>
+              <span>Services</span>
+            </a>
+            <a href="#" class="nav-item" data-page="cache" id="nav-cache">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z"/></svg>
+              <span>Cache</span>
+            </a>
+            <a href="#" class="nav-item" data-page="cron" id="nav-cron">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z"/></svg>
+              <span>Cron Jobs</span>
+            </a>
+            <a href="#" class="nav-item" data-page="terminal" id="nav-terminal">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M2 5a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm3.293 1.293a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 01-1.414-1.414L7.586 10 5.293 7.707a1 1 0 010-1.414zM11 12a1 1 0 100 2h3a1 1 0 100-2h-3z"/></svg>
+              <span>Terminal</span>
+            </a>
+          </div>
+
+          <div class="nav-section">
+            <span class="nav-section-title">Deploy</span>
+            <a href="#" class="nav-item" data-page="git" id="nav-git">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M12.316 3.051a1 1 0 01.633 1.265l-4 12a1 1 0 11-1.898-.632l4-12a1 1 0 011.265-.633zM5.707 6.293a1 1 0 010 1.414L3.414 10l2.293 2.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0zm8.586 0a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L16.586 10l-2.293-2.293a1 1 0 010-1.414z"/></svg>
+              <span>Git Deploy</span>
+            </a>
+            <a href="#" class="nav-item" data-page="python" id="nav-python">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M12.316 3.051a1 1 0 01.633 1.265l-4 12a1 1 0 11-1.898-.632l4-12a1 1 0 011.265-.633zM5.707 6.293a1 1 0 010 1.414L3.414 10l2.293 2.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0zm8.586 0a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L16.586 10l-2.293-2.293a1 1 0 010-1.414z"/></svg>
+              <span>Python Services</span>
+            </a>
+          </div>
+
+          <div class="nav-section">
+            <span class="nav-section-title">Security</span>
+            <a href="#" class="nav-item" data-page="firewall" id="nav-firewall">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M2.166 4.999A11.954 11.954 0 0010 1.944 11.954 11.954 0 0017.834 5c.11.65.166 1.32.166 2.001 0 5.225-3.34 9.67-8 11.317C5.34 16.67 2 12.225 2 7c0-.682.057-1.35.166-2.001zm11.541 3.708a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"/></svg>
+              <span>Firewall</span>
+            </a>
+            <a href="#" class="nav-item" data-page="security" id="nav-security">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 8a6 6 0 01-7.743 5.743L10 14l-1 1-1 1H6v2H2v-4l4.257-4.257A6 6 0 1118 8zm-6-4a1 1 0 100 2 2 2 0 012 2 1 1 0 102 0 4 4 0 00-4-4z"/></svg>
+              <span>Security</span>
+            </a>
+          </div>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="sidebar-user" id="sidebar-user">
+            <div class="user-avatar">A</div>
+            <div class="user-info">
+              <span class="user-name" id="user-display-name">admin</span>
+              <span class="user-role">Administrator</span>
+            </div>
+          </div>
+          <div class="sidebar-actions">
+            <button class="sidebar-action-btn" id="theme-toggle" title="Toggle theme">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"/></svg>
+            </button>
+            <button class="sidebar-action-btn" id="logout-btn" title="Logout">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 3a1 1 0 00-1 1v12a1 1 0 102 0V4a1 1 0 00-1-1zm10.293 9.293a1 1 0 001.414 1.414l3-3a1 1 0 000-1.414l-3-3a1 1 0 10-1.414 1.414L14.586 9H7a1 1 0 100 2h7.586l-1.293 1.293z"/></svg>
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main Content Area -->
+      <main class="main-content" id="main-content">
+        <header class="content-header">
+          <div class="header-left">
+            <button class="mobile-menu-btn" id="mobile-menu-btn" aria-label="Open menu">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 10a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 15a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z"/></svg>
+            </button>
+            <h1 class="page-title" id="page-title">Dashboard</h1>
+          </div>
+          <div class="header-right">
+            <div class="header-stats">
+              <div class="header-stat" id="header-cpu">
+                <span class="stat-label">CPU</span>
+                <span class="stat-value" id="cpu-value">—%</span>
+              </div>
+              <div class="header-stat" id="header-ram">
+                <span class="stat-label">RAM</span>
+                <span class="stat-value" id="ram-value">—%</span>
+              </div>
+            </div>
+            <div class="anti-attack-indicator" id="anti-attack-badge" style="display:none">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M2.166 4.999A11.954 11.954 0 0010 1.944 11.954 11.954 0 0017.834 5c.11.65.166 1.32.166 2.001 0 5.225-3.34 9.67-8 11.317C5.34 16.67 2 12.225 2 7c0-.682.057-1.35.166-2.001zm11.541 3.708a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"/></svg>
+              <span>SHIELD ACTIVE</span>
+            </div>
+          </div>
+        </header>
+
+        <div class="content-body" id="content-body">
+          <!-- Dynamic page content injected here -->
+        </div>
+      </main>
+    </div>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- Modal Overlay -->
+    <div id="modal-overlay" class="modal-overlay" style="display:none">
+      <div class="modal" id="modal">
+        <div class="modal-header">
+          <h2 class="modal-title" id="modal-title">Modal</h2>
+          <button class="modal-close" id="modal-close">&times;</button>
+        </div>
+        <div class="modal-body" id="modal-body"></div>
+        <div class="modal-footer" id="modal-footer"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="src/app.js" type="module"></script>
+</body>
+</html>
