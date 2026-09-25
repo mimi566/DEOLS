@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "DEOLS — Debian OpenLiteSpeed Management Panel",
   "main": "backend/index.js",
+  "bin": {
+    "deols": "./bin/deols-cli.js"
+  },
   "type": "module",
   "scripts": {
     "start": "node backend/index.js",

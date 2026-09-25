@@ -33,6 +33,7 @@ import cacheRoutes from './api/cache.js';
 import systemRoutes from './api/system.js';
 import pythonRoutes from './api/python.js';
 import securityRoutes from './api/security.js';
+import olsRoutes from './api/ols.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PANEL_VERSION = '1.0.0';
@@ -116,6 +117,7 @@ async function bootstrap() {
   await app.register(systemRoutes, { prefix: '/api/system' });
   await app.register(pythonRoutes, { prefix: '/api/python' });
   await app.register(securityRoutes, { prefix: '/api/security' });
+  await app.register(olsRoutes, { prefix: '/api/ols' });
 
   // ─── Panel Info Endpoint ────────────────────────────────
 

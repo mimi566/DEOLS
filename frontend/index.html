@@ -34,40 +34,35 @@
       </div>
     </div>
 
-    <!-- Setup Screen -->
+    <!-- Setup Screen (Root SSH Required) -->
     <div id="setup-screen" class="auth-screen" style="display:none">
-      <div class="auth-card">
+      <div class="auth-card" style="max-width: 520px;">
         <div class="auth-header">
           <svg class="auth-logo" viewBox="0 0 48 48" fill="none">
-            <path d="M26 4L8 28h14l-4 16 18-24H22l4-16z" fill="url(#bolt-grad2)" stroke="rgba(255,255,255,0.2)" stroke-width="1.5"/>
-            <defs><linearGradient id="bolt-grad2" x1="8" y1="4" x2="36" y2="44"><stop offset="0%" stop-color="#6366f1"/><stop offset="100%" stop-color="#a78bfa"/></linearGradient></defs>
+            <path d="M24 4L6 12v12c0 11.1 7.7 21.5 18 24 10.3-2.5 18-12.9 18-24V12L24 4zm0 22a4 4 0 110-8 4 4 0 010 8z" fill="url(#bolt-grad2)" stroke="rgba(255,255,255,0.2)" stroke-width="1.5"/>
+            <defs><linearGradient id="bolt-grad2" x1="6" y1="4" x2="42" y2="48"><stop offset="0%" stop-color="#6366f1"/><stop offset="100%" stop-color="#a78bfa"/></linearGradient></defs>
           </svg>
-          <h1>Welcome to DEOLS</h1>
-          <p>Create your admin account to get started</p>
+          <h1>Root SSH Setup Required</h1>
+          <p>Admin credentials must be generated from the server terminal</p>
         </div>
-        <form id="setup-form" class="auth-form">
-          <div class="form-group">
-            <label for="setup-username">Username</label>
-            <input type="text" id="setup-username" placeholder="admin" required autocomplete="username">
+        <div class="auth-form">
+          <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color, rgba(255,255,255,0.1)); border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+            <p style="font-size: 13px; color: var(--text-secondary, #94a3b8); margin-bottom: 12px; line-height: 1.5;">
+              For maximum security, <strong>DEOLS does not allow public web registration</strong>. Please connect to your Debian 12 server via SSH as root and run:
+            </p>
+            <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(0,0,0,0.4); border-radius: 6px; padding: 10px 14px; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #38bdf8;">
+              <span id="ssh-setup-cmd">deols admin reset</span>
+              <button type="button" id="copy-setup-cmd-btn" class="btn btn-sm" style="padding: 4px 8px; font-size: 11px;">Copy</button>
+            </div>
+            <p style="font-size: 12px; color: var(--text-muted, #64748b); margin-top: 12px; line-height: 1.4;">
+              This command will securely generate your initial administrator password using Argon2id and print your login credentials.
+            </p>
           </div>
-          <div class="form-group">
-            <label for="setup-email">Email</label>
-            <input type="email" id="setup-email" placeholder="admin@example.com">
-          </div>
-          <div class="form-group">
-            <label for="setup-password">Password</label>
-            <input type="password" id="setup-password" placeholder="••••••••••••" required minlength="8" autocomplete="new-password">
-          </div>
-          <div class="form-group">
-            <label for="setup-password2">Confirm Password</label>
-            <input type="password" id="setup-password2" placeholder="••••••••••••" required minlength="8" autocomplete="new-password">
-          </div>
-          <button type="submit" class="btn btn-primary btn-full" id="setup-btn">
-            <span>Create Account & Enter Panel</span>
+          <button type="button" class="btn btn-primary btn-full" id="setup-check-btn">
+            <span>I Have Generated Credentials — Proceed to Login</span>
             <svg viewBox="0 0 20 20" fill="currentColor" class="btn-icon"><path fill-rule="evenodd" d="M10.293 5.293a1 1 0 011.414 0l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414-1.414L12.586 11H5a1 1 0 110-2h7.586l-2.293-2.293a1 1 0 010-1.414z"/></svg>
           </button>
-          <p id="setup-error" class="form-error"></p>
-        </form>
+        </div>
       </div>
     </div>
 

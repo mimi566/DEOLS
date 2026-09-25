@@ -23,48 +23,11 @@ function saveUsers(users) {
 }
 
 export default async function authRoutes(app) {
-  // ─── Initial Setup (first-run user creation) ───────────
+  // ─── Setup Guard (Web creation disabled — Root SSH only) ─
   app.post('/setup', async (request, reply) => {
-    const users = loadUsers();
-    if (users.length > 0) {
-      return reply.code(409).send({ error: 'Panel already initialized' });
-    }
-
-    const { username, password, email } = request.body || {};
-    if (!username || !password) {
-      return reply.code(400).send({ error: 'Username and password required' });
-    }
-
-    // Dynamically import argon2
-    const argon2 = await import('argon2');
-    const hash = await argon2.hash(password, {
-      type: argon2.argon2id,
-      memoryCost: 65536,
-      timeCost: 3,
-      parallelism: 4,
+    return reply.code(403).send({
+      error: 'Web-based account setup is disabled for security. Please connect to your server via root SSH and run: deols admin reset',
     });
-
-    const user = {
-      id: crypto.randomUUID(),
-      username,
-      email: email || '',
-      passwordHash: hash,
-      role: 'admin',
-      createdAt: new Date().toISOString(),
-    };
-
-    saveUsers([user]);
-
-    const token = app.jwt.sign({ id: user.id, username: user.username, role: user.role });
-    reply
-      .setCookie('deols_token', token, {
-        path: '/',
-        httpOnly: true,
-        secure: true,
-        sameSite: 'strict',
-        maxAge: 86400,
-      })
-      .send({ success: true, user: { id: user.id, username: user.username, role: user.role } });
   });
 
   // ─── Login ──────────────────────────────────────────────
@@ -134,29 +97,10 @@ export default async function authRoutes(app) {
     return { initialized: users.length > 0 };
   });
 
-  // ─── Change Password ───────────────────────────────────
+  // ─── Change Password (Disabled via Web — Root SSH only) 
   app.put('/password', { preHandler: [app.authenticate] }, async (request, reply) => {
-    const { currentPassword, newPassword } = request.body || {};
-    if (!currentPassword || !newPassword) {
-      return reply.code(400).send({ error: 'Both current and new password required' });
-    }
-
-    const users = loadUsers();
-    const idx = users.findIndex((u) => u.id === request.user.id);
-    if (idx === -1) return reply.code(404).send({ error: 'User not found' });
-
-    const argon2 = await import('argon2');
-    const valid = await argon2.verify(users[idx].passwordHash, currentPassword);
-    if (!valid) return reply.code(401).send({ error: 'Current password incorrect' });
-
-    users[idx].passwordHash = await argon2.hash(newPassword, {
-      type: argon2.argon2id,
-      memoryCost: 65536,
-      timeCost: 3,
-      parallelism: 4,
+    return reply.code(403).send({
+      error: 'Password modification via web interface is disabled for server security. Please login to root SSH and execute: deols admin setpass <password> or deols admin reset',
     });
-
-    saveUsers(users);
-    return { success: true };
   });
 }
