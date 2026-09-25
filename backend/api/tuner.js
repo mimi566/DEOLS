@@ -53,31 +53,74 @@ function saveTunerState(state) {
 }
 
 /**
- * Detect server hardware specifications
+ * Detect exact server hardware specifications (RAM in MB, Storage in MB, vCPUs)
  */
 async function getHardwareSpecs() {
-  const totalRamMb = Math.round(os.totalmem() / (1024 * 1024));
-  const cpuCores = os.cpus()?.length || 1;
-
+  let totalRamMb = Math.round(os.totalmem() / (1024 * 1024));
+  let cpuCores = os.cpus()?.length || 1;
+  let cpuModel = os.cpus()?.[0]?.model || 'Standard Server Processor';
+  let diskTotalMb = 0;
+  let diskFreeMb = 0;
   let activeSwapMb = 0;
   let swapFileExists = existsSync('/swapfile');
 
-  try {
-    const meminfo = readFileSync('/proc/meminfo', 'utf-8');
-    const swapTotalMatch = meminfo.match(/SwapTotal:\s+(\d+)\s+kB/i);
-    if (swapTotalMatch) {
-      activeSwapMb = Math.round(parseInt(swapTotalMatch[1], 10) / 1024);
-    }
-  } catch {
-    // Windows/Dev fallback
-    activeSwapMb = swapFileExists ? 2048 : 0;
+  if (process.platform === 'linux') {
+    // 1. Precise RAM in MB matching `free -m`
+    try {
+      const ramRes = await shell(`free -m | awk '/Mem:/ {print $2}'`);
+      if (ramRes.stdout && !isNaN(parseInt(ramRes.stdout, 10))) {
+        totalRamMb = parseInt(ramRes.stdout.trim(), 10);
+      }
+    } catch {}
+
+    // 2. Precise vCPU cores matching `nproc`
+    try {
+      const cpuRes = await shell('nproc');
+      if (cpuRes.stdout && !isNaN(parseInt(cpuRes.stdout, 10))) {
+        cpuCores = parseInt(cpuRes.stdout.trim(), 10);
+      }
+    } catch {}
+
+    // 3. Precise Disk Space in MB matching `df -m /`
+    try {
+      const dfRes = await shell(`df -m / | awk 'NR==2 {print $2, $4}'`);
+      if (dfRes.stdout) {
+        const parts = dfRes.stdout.trim().split(/\s+/);
+        if (parts[0] && !isNaN(parseInt(parts[0], 10))) diskTotalMb = parseInt(parts[0], 10);
+        if (parts[1] && !isNaN(parseInt(parts[1], 10))) diskFreeMb = parseInt(parts[1], 10);
+      }
+    } catch {}
+
+    // 4. Precise Swap in MB matching `free -m`
+    try {
+      const swapRes = await shell(`free -m | awk '/Swap:/ {print $2}'`);
+      if (swapRes.stdout && !isNaN(parseInt(swapRes.stdout, 10))) {
+        activeSwapMb = parseInt(swapRes.stdout.trim(), 10);
+      }
+    } catch {}
+
+    // 5. CPU Model from /proc/cpuinfo
+    try {
+      const cpuInfo = readFileSync('/proc/cpuinfo', 'utf-8');
+      const modelMatch = cpuInfo.match(/model name\s*:\s*(.+)/i);
+      if (modelMatch) cpuModel = modelMatch[1].trim();
+    } catch {}
+  } else {
+    // Windows/dev mock values
+    diskTotalMb = 40960;
+    diskFreeMb = 28672;
+    activeSwapMb = 2048;
   }
 
   return {
     ram: totalRamMb,
     cpu: cpuCores,
+    cpuModel,
+    diskTotalMb,
+    diskFreeMb,
     swap: activeSwapMb,
     swapFileExists,
+    rawDiagCmd: `echo "CPU Cores: $(nproc)" && echo "Total RAM: $(free -m | awk '/Mem:/ {print $2}') MB" && echo "Disk Space: $(df -m / | awk 'NR==2 {print $2}') MB"`,
   };
 }
 
