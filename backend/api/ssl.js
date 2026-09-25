@@ -2,7 +2,7 @@
 // DEOLS SSL API — Certbot Wrapper & Cloudflare Wildcard SSL
 // ─────────────────────────────────────────────────────────────
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { promises as dnsPromises } from 'dns';
 import { config } from '../config.js';
@@ -133,9 +133,51 @@ export default async function sslRoutes(app) {
     return await checkDomainDNS(cleanDomain);
   });
 
-  // ─── Issue Standard SSL (HTTP-01) ──────────────────────
-  app.post('/issue', async (request, reply) => {
-    const { domain, email, includeWww = true } = request.body || {};
+  // ─── Prepare and Overwrite Stale/Broken SSL Files ──────────────────
+  async function prepareCertbotForFreshOverwrite(domain, forceOverwrite = false) {
+    // 1. Remove any stale certbot locks left by previous aborted runs
+    try {
+      await shell('rm -f /var/lock/certbot.lock /var/lib/letsencrypt/lock /etc/letsencrypt/lock /tmp/certbot* 2>/dev/null || true');
+    } catch {}
+
+    // 2. Remove duplicate lineages created by previous failed runs (e.g. domain-0001, domain-0002)
+    try {
+      await shell(`rm -rf /etc/letsencrypt/live/${domain}-00* /etc/letsencrypt/archive/${domain}-00* /etc/letsencrypt/renewal/${domain}-00*.conf 2>/dev/null || true`);
+    } catch {}
+
+    // 3. Inspect if existing cert files are missing, zero-bytes, or corrupted from a prior failed attempt
+    const liveDir = `/etc/letsencrypt/live/${domain}`;
+    const renewalFile = `/etc/letsencrypt/renewal/${domain}.conf`;
+    const archiveDir = `/etc/letsencrypt/archive/${domain}`;
+
+    let shouldClean = forceOverwrite;
+    if (!shouldClean) {
+      if (existsSync(liveDir)) {
+        try {
+          const fullchain = join(liveDir, 'fullchain.pem');
+          const privkey = join(liveDir, 'privkey.pem');
+          if (!existsSync(fullchain) || !existsSync(privkey) || statSync(fullchain).size === 0 || statSync(privkey).size === 0) {
+            shouldClean = true;
+          }
+        } catch {
+          shouldClean = true;
+        }
+      } else if (existsSync(renewalFile) || existsSync(archiveDir)) {
+        // Renewal config or archive directory exists without a valid live directory -> failed mid-way
+        shouldClean = true;
+      }
+    }
+
+    if (shouldClean) {
+      try {
+        await shell(`rm -rf /etc/letsencrypt/live/${domain} /etc/letsencrypt/archive/${domain} /etc/letsencrypt/renewal/${domain}.conf 2>/dev/null || true`);
+      } catch {}
+    }
+  }
+
+  // ─── Standard SSL (HTTP-01) Handler ─────────────────────
+  const handleStandardSSLIssue = async (request, reply) => {
+    const { domain, email, includeWww = true, overwrite = false } = request.body || {};
     if (!domain) return reply.code(400).send({ error: 'Domain required' });
 
     const cleanDomain = domain.replace(/^\*\./, '').toLowerCase().trim();
@@ -165,17 +207,24 @@ export default async function sslRoutes(app) {
 
     let certResult;
 
-    // 2. Stop OpenLiteSpeed to free up ports 80/443 for Certbot Standalone verification
+    // Clean up stale locks and previous failed cert files to guarantee fresh overwrite
+    await prepareCertbotForFreshOverwrite(cleanDomain, overwrite);
+
+    // 2. Stop OpenLiteSpeed (and any rogue apache2/nginx) to free up ports 80/443 for Certbot Standalone verification
     try {
       await shell('systemctl stop lsws 2>/dev/null || /usr/local/lsws/bin/lswsctrl stop 2>/dev/null || true');
+      await shell('systemctl stop apache2 2>/dev/null || systemctl stop nginx 2>/dev/null || true');
     } catch {}
 
     try {
-      // 3. Generate certificate via certbot standalone mode
+      // 3. Generate certificate via certbot standalone mode (with --cert-name, --force-renewal, --expand to overwrite on retry)
       certResult = await run(config.bin.certbot, [
         'certonly',
         '--standalone',
         '--preferred-challenges', 'http',
+        '--cert-name', cleanDomain,
+        '--force-renewal',
+        '--expand',
         ...domains,
         '--email', email || `admin@${cleanDomain}`,
         '--agree-tos',
@@ -193,10 +242,19 @@ export default async function sslRoutes(app) {
     // 5. Fallback: if standalone failed (e.g. port blocked or container restriction), attempt webroot
     if (certResult.code !== 0 && targetRoot && existsSync(targetRoot)) {
       try {
+        const acmeDir = join(targetRoot, '.well-known', 'acme-challenge');
+        try {
+          mkdirSync(acmeDir, { recursive: true });
+          await shell(`chmod -R 755 ${join(targetRoot, '.well-known')} 2>/dev/null || true`);
+        } catch {}
+
         const webrootResult = await run(config.bin.certbot, [
           'certonly',
           '--webroot',
           '-w', targetRoot,
+          '--cert-name', cleanDomain,
+          '--force-renewal',
+          '--expand',
           ...domains,
           '--email', email || `admin@${cleanDomain}`,
           '--agree-tos',
@@ -244,10 +302,15 @@ export default async function sslRoutes(app) {
       message: `SSL certificate successfully installed and configured for ${cleanDomain}!`,
       sslExpiry: getSSLExpiry(cleanDomain),
     };
+  };
+
+  // Register both /issue and /request endpoints
+  app.post('/issue', handleStandardSSLIssue);
+  app.post('/request', handleStandardSSLIssue);
 
   // ─── Issue Wildcard SSL with Cloudflare DNS-01 ──────────
   app.post('/wildcard', async (request, reply) => {
-    const { domain, email, cfEmail, cfApiKey, cfApiToken } = request.body || {};
+    const { domain, email, cfEmail, cfApiKey, cfApiToken, overwrite = false } = request.body || {};
     if (!domain) return reply.code(400).send({ error: 'Domain is required' });
 
     const baseDomain = domain.replace(/^\*\./, '').toLowerCase().trim();
@@ -281,6 +344,9 @@ export default async function sslRoutes(app) {
       await shell('dpkg -s python3-certbot-dns-cloudflare >/dev/null 2>&1 || (DEBIAN_FRONTEND=noninteractive apt-get update -qq && apt-get install -y -qq python3-certbot-dns-cloudflare)');
     } catch {}
 
+    // Clean up stale locks and previous failed cert files to guarantee fresh overwrite
+    await prepareCertbotForFreshOverwrite(baseDomain, overwrite);
+
     // 4. Run Certbot DNS-01
     try {
       const args = [
@@ -288,6 +354,9 @@ export default async function sslRoutes(app) {
         '--dns-cloudflare',
         '--dns-cloudflare-credentials', credFile,
         '--dns-cloudflare-propagation-seconds', '20',
+        '--cert-name', baseDomain,
+        '--force-renewal',
+        '--expand',
         '-d', baseDomain,
         '-d', `*.${baseDomain}`,
         '--email', email || cfEmail || `admin@${baseDomain}`,

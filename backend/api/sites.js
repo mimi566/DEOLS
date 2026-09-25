@@ -11,6 +11,8 @@ import {
   addVirtualHostToOls,
   removeVirtualHostFromOls,
   generateCyberpanelVhConf,
+  getVirtualHostConfig,
+  updateVirtualHostSSL,
 } from '../utils/ols-config.js';
 
 const SITES_FILE = join(config.dataDir, 'sites.json');
@@ -320,6 +322,238 @@ require_once ABSPATH . 'wp-settings.php';
     saveSites(sites);
 
     return { success: true, site: sites[idx] };
+  });
+
+  // ─── Site Full Details (For Management Dashboard) ────────
+  app.get('/:domain/details', async (request, reply) => {
+    const sites = loadSites();
+    const site = sites.find((s) => s.domain === request.params.domain);
+    if (!site) return reply.code(404).send({ error: 'Site not found' });
+
+    let serverIp = '127.0.0.1';
+    try {
+      const res = await shell("hostname -I 2>/dev/null | awk '{print $1}'");
+      serverIp = res.stdout.trim() || '127.0.0.1';
+    } catch {}
+
+    const cleanUser = site.siteUser || site.domain.replace(/[^a-z0-9]/gi, '').substring(0, 16);
+    const docRoot = site.docRoot || join(config.webRoot, site.domain, 'public_html');
+    const vhconfPath = join(config.vhostsDir, site.domain, 'vhconf.conf');
+
+    return {
+      domain: site.domain,
+      siteUser: cleanUser,
+      serverIp,
+      rootDirectory: site.domain,
+      docRoot,
+      phpVersion: site.phpVersion || '83',
+      ssl: !!site.ssl,
+      wildcard: !!site.wildcard,
+      dbName: site.dbName || `wp_${site.domain.replace(/[^a-z0-9]/gi, '_')}`,
+      dbUser: site.dbUser || `u_${site.domain.replace(/[^a-z0-9]/gi, '').substring(0, 10)}`,
+      dbHost: 'localhost:3306',
+      status: site.status || 'active',
+      createdAt: site.createdAt || new Date().toISOString(),
+      vhconfPath,
+      vhconfExists: existsSync(vhconfPath),
+    };
+  });
+
+  // ─── Get Virtual Host Config (vhconf.conf) ──────────────
+  app.get('/:domain/vhost', async (request, reply) => {
+    const { domain } = request.params;
+    const vh = getVirtualHostConfig(domain);
+    return {
+      domain,
+      vhconfPath: vh.vhconfPath,
+      content: vh.vhconfContent || '',
+      exists: existsSync(vh.vhconfPath),
+    };
+  });
+
+  // ─── Update Virtual Host Config & Reload OLS ────────────
+  app.put('/:domain/vhost', async (request, reply) => {
+    const { domain } = request.params;
+    const { content } = request.body || {};
+    if (typeof content !== 'string') {
+      return reply.code(400).send({ error: 'Configuration content is required' });
+    }
+
+    const vhconfDir = join(config.vhostsDir, domain);
+    if (!existsSync(vhconfDir)) mkdirSync(vhconfDir, { recursive: true });
+    const vhconfPath = join(vhconfDir, 'vhconf.conf');
+
+    try {
+      writeFileSync(vhconfPath, content, 'utf-8');
+      const lswsctrl = config.bin?.lswsctrl || join(config.olsRoot, 'bin', 'lswsctrl');
+      if (existsSync(lswsctrl)) {
+        await shell(`"${lswsctrl}" reload`);
+      } else {
+        await shell('systemctl reload lsws 2>/dev/null || systemctl restart lsws 2>/dev/null || true');
+      }
+
+      return {
+        success: true,
+        message: 'OpenLiteSpeed Virtual Host configuration saved and reloaded (zero downtime)!',
+        vhconfPath,
+      };
+    } catch (err) {
+      return reply.code(500).send({ error: 'Failed to write vhconf.conf', details: err.message });
+    }
+  });
+
+  // ─── Update Site Domain Settings (PHP version, docRoot) ─
+  app.put('/:domain/settings', async (request, reply) => {
+    const { domain } = request.params;
+    const { phpVersion, rootDirectory } = request.body || {};
+
+    const sites = loadSites();
+    const idx = sites.findIndex((s) => s.domain === domain);
+    if (idx === -1) return reply.code(404).send({ error: 'Site not found' });
+
+    if (phpVersion) sites[idx].phpVersion = phpVersion;
+    if (rootDirectory) {
+      sites[idx].docRoot = join(config.webRoot, rootDirectory, 'public_html');
+    }
+    saveSites(sites);
+
+    if (phpVersion) {
+      const vhconfPath = join(config.vhostsDir, domain, 'vhconf.conf');
+      if (existsSync(vhconfPath)) {
+        try {
+          let conf = readFileSync(vhconfPath, 'utf-8');
+          conf = conf.replace(/path\s+\$SERVER_ROOT\/lsphp\d+\/bin\/lsphp/g, `path                    $SERVER_ROOT/lsphp${phpVersion}/bin/lsphp`);
+          conf = conf.replace(/type\s+lsapi:lsphp\d+/g, `type                    lsapi:lsphp${phpVersion}`);
+          writeFileSync(vhconfPath, conf, 'utf-8');
+          await shell('systemctl reload lsws 2>/dev/null || true');
+        } catch {}
+      }
+    }
+
+    return {
+      success: true,
+      message: 'Domain and OpenLiteSpeed settings updated successfully!',
+      site: sites[idx],
+    };
+  });
+
+  // ─── Update Site User Password ──────────────────────────
+  app.post('/:domain/user-password', async (request, reply) => {
+    const { domain } = request.params;
+    const { password } = request.body || {};
+    if (!password || password.length < 6) {
+      return reply.code(400).send({ error: 'Password must be at least 6 characters' });
+    }
+
+    const sites = loadSites();
+    const idx = sites.findIndex((s) => s.domain === domain);
+    if (idx === -1) return reply.code(404).send({ error: 'Site not found' });
+
+    sites[idx].sitePassword = password;
+    saveSites(sites);
+
+    const siteUser = sites[idx].siteUser || domain.replace(/[^a-z0-9]/gi, '').substring(0, 16);
+    try {
+      await shell(`echo "${siteUser}:${password}" | chpasswd 2>/dev/null || true`);
+    } catch {}
+
+    return {
+      success: true,
+      message: `Password for site user '${siteUser}' updated successfully!`,
+    };
+  });
+
+  // ─── Site Error & Access Logs ───────────────────────────
+  app.get('/:domain/logs', async (request, reply) => {
+    const { domain } = request.params;
+    const { type = 'error' } = request.query;
+
+    const logPath = type === 'access'
+      ? join(config.webRoot, domain, 'logs', 'access.log')
+      : join(config.webRoot, domain, 'logs', 'error.log');
+
+    let lines = '';
+    if (existsSync(logPath)) {
+      try {
+        const res = await shell(`tail -n 150 "${logPath}" 2>/dev/null`);
+        lines = res.stdout || '';
+      } catch {
+        lines = 'Unable to read log file.';
+      }
+    } else {
+      lines = `Log file not found at: ${logPath}\nNo requests logged yet or site was recently provisioned.`;
+    }
+
+    return { domain, type, path: logPath, lines };
+  });
+
+  // ─── Clear Site Logs ────────────────────────────────────
+  app.post('/:domain/logs/clear', async (request, reply) => {
+    const { domain } = request.params;
+    const { type = 'both' } = request.body || {};
+
+    const errorLog = join(config.webRoot, domain, 'logs', 'error.log');
+    const accessLog = join(config.webRoot, domain, 'logs', 'access.log');
+
+    try {
+      if (type === 'error' || type === 'both') {
+        if (existsSync(errorLog)) writeFileSync(errorLog, '');
+      }
+      if (type === 'access' || type === 'both') {
+        if (existsSync(accessLog)) writeFileSync(accessLog, '');
+      }
+      return { success: true, message: 'Logs cleared successfully' };
+    } catch (err) {
+      return reply.code(500).send({ error: 'Failed to clear logs', details: err.message });
+    }
+  });
+
+  // ─── Purge Site LSCache ──────────────────────────────────
+  app.post('/:domain/cache/purge', async (request, reply) => {
+    const { domain } = request.params;
+    try {
+      await shell(`rm -rf /tmp/lscache/${domain}/* /usr/local/lsws/cachedata/${domain}/* 2>/dev/null || true`);
+      return {
+        success: true,
+        message: `LiteSpeed Cache (LSCache) for '${domain}' successfully purged!`,
+      };
+    } catch (err) {
+      return reply.code(500).send({ error: 'Failed to purge cache', details: err.message });
+    }
+  });
+
+  // ─── Trigger WordPress WP-Cron ──────────────────────────
+  app.post('/:domain/wp-cron', async (request, reply) => {
+    const { domain } = request.params;
+    try {
+      const res = await shell(`curl -s -k -L -m 10 "https://127.0.0.1/wp-cron.php?doing_wp_cron" -H "Host: ${domain}" 2>&1 || curl -s -k -L -m 10 "http://127.0.0.1/wp-cron.php?doing_wp_cron" -H "Host: ${domain}" 2>&1`);
+      return {
+        success: true,
+        message: `WordPress WP-Cron background task executed for '${domain}'!`,
+        output: res.stdout || 'WP-Cron executed.',
+      };
+    } catch (err) {
+      return reply.code(500).send({ error: 'WP-Cron execution failed', details: err.message });
+    }
+  });
+
+  // ─── Repair & Optimize Database ─────────────────────────
+  app.post('/:domain/db/repair', async (request, reply) => {
+    const { domain } = request.params;
+    const sites = loadSites();
+    const site = sites.find((s) => s.domain === domain);
+    if (!site?.dbName) return reply.code(400).send({ error: 'No database associated with this site' });
+
+    try {
+      const res = await shell(`mysqlcheck -u root --auto-repair --optimize --databases "${site.dbName}" 2>&1`);
+      return {
+        success: true,
+        message: `Database '${site.dbName}' repaired and optimized successfully!`,
+        output: res.stdout,
+      };
+    } catch (err) {
+      return reply.code(500).send({ error: 'Database repair failed', details: err.message });
+    }
   });
 }
 

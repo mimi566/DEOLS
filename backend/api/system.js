@@ -282,7 +282,7 @@ export default async function systemRoutes(app) {
   });
 
   // ─── Reload Server / Panel Daemon ─────────────────────
-  app.post('/reload', async (request, reply) => {
+  const handleSystemReload = async (request, reply) => {
     setTimeout(async () => {
       await shell('systemctl reload-or-restart deols 2>/dev/null || systemctl restart deols 2>/dev/null || true');
     }, 500);
@@ -292,5 +292,8 @@ export default async function systemRoutes(app) {
       message: 'Server daemon reload signal dispatched successfully',
       timestamp: new Date().toISOString(),
     };
-  });
+  };
+
+  app.post('/reload', handleSystemReload);
+  app.get('/reload', handleSystemReload);
 }

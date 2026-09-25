@@ -12,16 +12,14 @@ import { createWriteStream } from 'fs';
 import { config } from '../config.js';
 import { shell } from '../utils/shell.js';
 
-// Allowed base paths (prevent path traversal)
-const ALLOWED_ROOTS = [config.webRoot, '/opt/deols/data'];
+// Root file manager access for authenticated DEOLS administrators
+const DEFAULT_ROOT = process.platform === 'win32' ? process.cwd() : '/';
 
 function validatePath(requestedPath) {
-  const resolved = resolve(requestedPath);
-  const isAllowed = ALLOWED_ROOTS.some((root) => resolved.startsWith(root));
-  if (!isAllowed) {
-    throw new Error('Access denied: path outside allowed directories');
+  if (!requestedPath || requestedPath === '' || requestedPath === '.') {
+    return DEFAULT_ROOT;
   }
-  return resolved;
+  return resolve(requestedPath);
 }
 
 export default async function filesRoutes(app) {
@@ -29,7 +27,7 @@ export default async function filesRoutes(app) {
 
   // ─── List Directory ────────────────────────────────────
   app.get('/list', async (request, reply) => {
-    const { path: dirPath = config.webRoot } = request.query;
+    const { path: dirPath = DEFAULT_ROOT } = request.query;
 
     try {
       const safePath = validatePath(dirPath);
@@ -109,7 +107,7 @@ export default async function filesRoutes(app) {
 
   // ─── Upload File ───────────────────────────────────────
   app.post('/upload', async (request, reply) => {
-    const targetDir = request.query.path || config.webRoot;
+    const targetDir = request.query.path || DEFAULT_ROOT;
 
     try {
       const safePath = validatePath(targetDir);

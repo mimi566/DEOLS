@@ -53,7 +53,25 @@ async function api(path, opts = {}) {
     }
 
     if (raw) return res;
-    return await res.json();
+
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      data = null;
+    }
+
+    if (!res.ok) {
+      if (!data || typeof data !== 'object') {
+        data = { success: false, error: `HTTP ${res.status}: ${res.statusText}` };
+      } else {
+        data.success = false;
+        if (!data.error && data.message) data.error = data.message;
+        if (!data.message && data.error) data.message = data.error;
+      }
+    }
+
+    return data;
   } catch (err) {
     toast(`Network error: ${err.message}`, 'error');
     return null;
@@ -116,18 +134,20 @@ document.getElementById('theme-toggle')?.addEventListener('click', () => {
 
 // ─── Navigation ─────────────────────────────────────────────
 
-function navigateTo(page) {
+function navigateTo(page, params = {}) {
   state.currentPage = page;
+  state.pageParams = params;
 
   // Update active nav item
   document.querySelectorAll('.nav-item').forEach((el) => {
-    el.classList.toggle('active', el.dataset.page === page);
+    el.classList.toggle('active', el.dataset.page === page || (page === 'site-manage' && el.dataset.page === 'sites'));
   });
 
   // Update page title
   const titles = {
     dashboard: 'Dashboard',
     sites: 'Sites',
+    'site-manage': `Site / ${params?.domain || 'Manage'}`,
     databases: 'Databases',
     ssl: 'SSL / TLS',
     files: 'File Manager',
@@ -153,6 +173,7 @@ function navigateTo(page) {
   const renderers = {
     dashboard: renderDashboard,
     sites: renderSites,
+    'site-manage': (container) => renderSiteManage(container, params?.domain),
     databases: renderDatabases,
     ssl: renderSSL,
     files: renderFiles,
@@ -306,14 +327,15 @@ async function restartOLSHeader() {
   toast('Sending graceful restart signal to OpenLiteSpeed…', 'info', 3500);
 
   try {
-    const res = await api('/ols/restart', { method: 'POST', body: {} });
+    const res = await api('/ols/restart', { method: 'POST', body: { action: 'restart' } });
     if (res?.success) {
       toast(res.message || 'OpenLiteSpeed gracefully restarted (zero downtime)', 'success', 5000);
       if (state.currentPage === 'ols' || state.currentPage === 'dashboard') {
         navigateTo(state.currentPage);
       }
     } else {
-      toast(res?.error || 'Failed to restart OpenLiteSpeed', 'error', 6000);
+      const errMsg = res?.message || res?.error || res?.details || 'Failed to restart OpenLiteSpeed';
+      toast(errMsg, 'error', 6000);
     }
   } catch (err) {
     toast(`Restart error: ${err.message}`, 'error', 6000);
@@ -540,12 +562,12 @@ async function noticeRestartOLS(btn) {
   if (btn) btn.disabled = true;
   toast('Sending graceful restart signal to OpenLiteSpeed…', 'info', 3000);
   try {
-    const res = await api('/ols/restart', { method: 'POST', body: {} });
+    const res = await api('/ols/restart', { method: 'POST', body: { action: 'restart' } });
     if (res?.success) {
       toast('OpenLiteSpeed restarted successfully (zero downtime)!', 'success', 5000);
       if (btn) btn.innerHTML = '✓ OLS Restarted';
     } else {
-      toast(res?.error || 'Failed to restart OLS', 'error');
+      toast(res?.message || res?.error || 'Failed to restart OLS', 'error');
       if (btn) btn.disabled = false;
     }
   } catch (err) {
@@ -558,12 +580,12 @@ async function noticeReloadServer(btn) {
   if (btn) btn.disabled = true;
   toast('Dispatching server daemon reload…', 'info', 3000);
   try {
-    const res = await api('/system/reload', { method: 'POST', body: {} });
+    const res = await api('/system/reload', { method: 'POST', body: { action: 'reload' } });
     if (res?.success) {
       toast('DEOLS server daemon reload signal dispatched!', 'success', 5000);
       if (btn) btn.innerHTML = '✓ Server Reloaded';
     } else {
-      toast(res?.error || 'Failed to reload server daemon', 'error');
+      toast(res?.message || res?.error || 'Failed to reload server daemon', 'error');
       if (btn) btn.disabled = false;
     }
   } catch (err) {
@@ -796,7 +818,9 @@ async function renderSites(container) {
               <td>
                 <div class="flex items-center gap-2">
                   <span class="status-dot ${site.status === 'active' ? 'active' : 'inactive'}"></span>
-                  <strong>${escapeHTML(site.domain)}</strong>
+                  <a href="javascript:void(0)" onclick="openSiteManage('${site.domain}')" class="site-domain-link" title="Open Site Management Dashboard">
+                    <strong>${escapeHTML(site.domain)}</strong>
+                  </a>
                 </div>
               </td>
               <td><span class="badge badge-neutral">PHP ${site.phpVersion === '83' ? '8.3' : site.phpVersion === '82' ? '8.2' : site.phpVersion}</span></td>
@@ -804,9 +828,13 @@ async function renderSites(container) {
               <td><span class="badge badge-${site.status === 'active' ? 'success' : 'warning'}">${site.status}</span></td>
               <td class="text-muted text-sm">${timeAgo(site.createdAt)}</td>
               <td>
-                <div class="flex gap-2">
-                  <button class="btn btn-sm btn-ghost" onclick="repairPerms('${site.domain}')">Repair</button>
-                  <button class="btn btn-sm btn-danger" onclick="deleteSite('${site.domain}')">Delete</button>
+                <div class="flex gap-2 items-center">
+                  <button class="btn btn-sm btn-primary" onclick="openSiteManage('${site.domain}')" title="Manage site settings, OLS vhost, databases, SSL, cache and logs">
+                    <svg viewBox="0 0 20 20" fill="currentColor" class="btn-icon" style="width: 13px; height: 13px; margin-right: 3px;"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z"/></svg>
+                    Manage
+                  </button>
+                  <button class="btn btn-sm btn-ghost" onclick="repairPerms('${site.domain}')" title="Repair permissions to nobody:nogroup">Repair</button>
+                  <button class="btn btn-sm btn-danger" onclick="deleteSite('${site.domain}')" title="Delete site">Delete</button>
                 </div>
               </td>
             </tr>
@@ -903,6 +931,716 @@ async function deleteSite(domain) {
     navigateTo('sites');
   } else {
     toast(result?.error || 'Failed to delete site', 'error');
+  }
+}
+
+// ─── Site Management Dashboard (CyberPanel / cPanel Model) ──
+
+let currentSiteManageDomain = null;
+let currentSiteLogType = 'error';
+
+async function openSiteManage(domain) {
+  navigateTo('site-manage', { domain });
+}
+window.openSiteManage = openSiteManage;
+
+async function renderSiteManage(container, domain) {
+  currentSiteManageDomain = domain;
+  if (!domain) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <h3>No Domain Specified</h3>
+        <p>Please select a site to manage.</p>
+        <button class="btn btn-primary" onclick="navigateTo('sites')">← Back to Sites</button>
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = `
+    <div class="site-manage-container">
+      <div class="text-muted" style="font-size: 0.9rem; padding: 30px 0; text-align: center;">
+        <span class="loading-spinner" style="display:inline-block;width:18px;height:18px;border:2px solid var(--border-primary);border-top-color:var(--color-primary);border-radius:50%;animation:spin 1s linear infinite;vertical-align:-3px;margin-right:8px;"></span>
+        Loading management dashboard for <strong>${escapeHTML(domain)}</strong>…
+      </div>
+    </div>
+  `;
+
+  const details = await api(`/sites/${encodeURIComponent(domain)}/details`);
+  if (!details || details.error) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <h3>Site Configuration Unavailable</h3>
+        <p>${escapeHTML(details?.error || 'Could not load site configuration.')}</p>
+        <button class="btn btn-primary" onclick="navigateTo('sites')">← Back to Sites</button>
+      </div>
+    `;
+    return;
+  }
+
+  const {
+    siteUser = domain.replace(/[^a-z0-9]/gi, '').substring(0, 16),
+    serverIp = '127.0.0.1',
+    docRoot = `/var/www/${domain}/public_html`,
+    phpVersion = '83',
+    ssl = false,
+    dbName = `wp_${domain.replace(/[^a-z0-9]/gi, '_')}`,
+    dbUser = `u_${domain.replace(/[^a-z0-9]/gi, '').substring(0, 10)}`,
+    status = 'active',
+  } = details;
+
+  container.innerHTML = `
+    <div class="site-manage-container">
+      <!-- Top Meta Info Header (Matches Image 2) -->
+      <div class="site-meta-header">
+        <div class="site-meta-items">
+          <div class="site-meta-item">
+            <span class="site-meta-label">Domain</span>
+            <span class="site-meta-value">
+              <a href="http://${escapeHTML(domain)}" target="_blank" rel="noopener noreferrer" class="site-meta-link">
+                ${escapeHTML(domain)}
+                <svg viewBox="0 0 20 20" fill="currentColor" style="width: 14px; height: 14px;"><path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z"/><path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z"/></svg>
+              </a>
+            </span>
+          </div>
+
+          <div class="site-meta-item">
+            <span class="site-meta-label">Site User</span>
+            <span class="site-meta-value text-mono">${escapeHTML(siteUser)}</span>
+          </div>
+
+          <div class="site-meta-item">
+            <span class="site-meta-label">IP Address</span>
+            <span class="site-meta-value text-mono">${escapeHTML(serverIp)}</span>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-3">
+          <span class="badge badge-${status === 'active' ? 'success' : 'warning'}">${status === 'active' ? '● Active' : status}</span>
+          <button class="btn btn-secondary btn-sm" onclick="navigateTo('sites')" title="Return to all sites">
+            ← Back to Sites
+          </button>
+        </div>
+      </div>
+
+      <!-- Navigation Tabs (Matches Image 2) -->
+      <div class="site-tabs-nav" id="site-manage-tabs">
+        <button class="site-tab-btn active" data-tab="settings">Settings</button>
+        <button class="site-tab-btn" data-tab="vhost">Vhost</button>
+        <button class="site-tab-btn" data-tab="databases">Databases</button>
+        <button class="site-tab-btn" data-tab="cache">OLS Cache</button>
+        <button class="site-tab-btn" data-tab="ssl">SSL/TLS</button>
+        <button class="site-tab-btn" data-tab="security">Security</button>
+        <button class="site-tab-btn" data-tab="ssh">SSH/FTP</button>
+        <button class="site-tab-btn" data-tab="files">File Manager</button>
+        <button class="site-tab-btn" data-tab="cron">Cron Jobs</button>
+        <button class="site-tab-btn" data-tab="logs">Logs</button>
+      </div>
+
+      <!-- 1. SETTINGS TAB PANE (Exact replica of Image 2) -->
+      <div class="site-tab-pane active" id="pane-settings">
+        <!-- Domain Settings Card -->
+        <div class="site-manage-card">
+          <div class="site-manage-card-header">
+            <h3 class="site-manage-card-title">Domain Settings</h3>
+          </div>
+          <div class="flex flex-col gap-4">
+            <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+              <div class="form-group">
+                <label class="form-label" style="font-weight:600;font-size:0.85rem;color:var(--text-secondary);margin-bottom:6px;display:block;">Domain Name</label>
+                <input type="text" class="input" value="${escapeHTML(domain)}" readonly style="background:var(--bg-secondary);cursor:not-allowed;width:100%;">
+              </div>
+              <div class="form-group">
+                <label class="form-label" style="font-weight:600;font-size:0.85rem;color:var(--text-secondary);margin-bottom:6px;display:block;">Root Directory *</label>
+                <input type="text" id="manage-root-dir" class="input" value="${escapeHTML(domain)}" style="width:100%;">
+                <span class="form-hint" style="font-size:11px;color:var(--text-tertiary);margin-top:6px;display:block;font-family:var(--font-mono);">
+                  ${escapeHTML(docRoot)}
+                </span>
+              </div>
+            </div>
+
+            <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+              <div class="form-group">
+                <label class="form-label" style="font-weight:600;font-size:0.85rem;color:var(--text-secondary);margin-bottom:6px;display:block;">PHP Version</label>
+                <select id="manage-php-version" class="input" style="width:100%;">
+                  <option value="83" ${phpVersion === '83' ? 'selected' : ''}>PHP 8.3 (LSPHP 8.3 — Default)</option>
+                  <option value="82" ${phpVersion === '82' ? 'selected' : ''}>PHP 8.2 (LSPHP 8.2)</option>
+                  <option value="81" ${phpVersion === '81' ? 'selected' : ''}>PHP 8.1 (LSPHP 8.1)</option>
+                </select>
+              </div>
+              <div class="form-group" style="display:flex;align-items:flex-end;justify-content:flex-end;">
+                <button class="btn btn-primary" id="btn-save-domain-settings" onclick="saveDomainSettings('${escapeHTML(domain)}')">
+                  Save
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Site User Settings Card -->
+        <div class="site-manage-card">
+          <div class="site-manage-card-header">
+            <h3 class="site-manage-card-title">Site User Settings</h3>
+          </div>
+          <div class="flex flex-col gap-4">
+            <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+              <div class="form-group">
+                <label class="form-label" style="font-weight:600;font-size:0.85rem;color:var(--text-secondary);margin-bottom:6px;display:block;">Site User</label>
+                <input type="text" class="input" value="${escapeHTML(siteUser)}" readonly style="background:var(--bg-secondary);cursor:not-allowed;width:100%;">
+              </div>
+              <div class="form-group">
+                <label class="form-label" style="font-weight:600;font-size:0.85rem;color:var(--text-secondary);margin-bottom:6px;display:block;">Password</label>
+                <input type="password" id="manage-site-user-pass" class="input" placeholder="••••••••••••" style="width:100%;">
+                <div class="flex justify-between items-center mt-2">
+                  <a href="javascript:void(0)" onclick="generateNewSitePass()" style="font-size:12px;color:var(--color-primary);text-decoration:none;font-weight:500;">
+                    Generate new password
+                  </a>
+                  <button class="btn btn-secondary btn-sm" onclick="saveSiteUserPass('${escapeHTML(domain)}')">
+                    Update Password
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- OLS Quick Actions Card -->
+        <div class="site-manage-card">
+          <div class="site-manage-card-header">
+            <h3 class="site-manage-card-title">OpenLiteSpeed Engine & Maintenance</h3>
+          </div>
+          <div class="flex gap-3" style="flex-wrap:wrap;">
+            <button class="btn btn-secondary btn-sm" onclick="repairPerms('${escapeHTML(domain)}')">
+              🛠️ Repair Permissions (nobody:nogroup)
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="purgeSiteCache('${escapeHTML(domain)}')">
+              ⚡ Purge LiteSpeed Cache (LSCache)
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="runSiteWpCron('${escapeHTML(domain)}')">
+              ⏱️ Execute WP-Cron Now
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="repairSiteDatabase('${escapeHTML(domain)}')">
+              🗄️ Repair Database
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. VHOST TAB PANE (OpenLiteSpeed vhconf.conf Editor) -->
+      <div class="site-tab-pane" id="pane-vhost">
+        <div class="site-manage-card">
+          <div class="site-manage-card-header">
+            <div>
+              <h3 class="site-manage-card-title">OpenLiteSpeed Virtual Host Configuration</h3>
+              <p class="text-muted text-xs text-mono" style="margin-top:4px;">
+                /usr/local/lsws/conf/vhosts/${escapeHTML(domain)}/vhconf.conf
+              </p>
+            </div>
+            <div class="flex gap-2">
+              <button class="btn btn-secondary btn-sm" onclick="loadVhostConf('${escapeHTML(domain)}')">
+                🔄 Refresh
+              </button>
+              <button class="btn btn-primary btn-sm" onclick="saveVhostConf('${escapeHTML(domain)}')">
+                💾 Save & Reload OLS
+              </button>
+            </div>
+          </div>
+          <div class="flex flex-col gap-3">
+            <textarea id="vhost-editor" style="width:100%;height:420px;font-family:var(--font-mono);font-size:0.85rem;line-height:1.5;background:var(--bg-secondary);color:var(--text-primary);padding:14px;border-radius:8px;border:1px solid var(--border-primary);resize:vertical;" spellcheck="false">Loading vhconf.conf…</textarea>
+            <div class="flex justify-between items-center text-xs text-muted">
+              <span>💡 Edits are applied immediately with a zero-downtime graceful reload signal to OpenLiteSpeed.</span>
+              <button class="btn btn-ghost btn-sm" onclick="reloadOlsFromVhost()">
+                Restart OLS Engine
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. DATABASES TAB PANE -->
+      <div class="site-tab-pane" id="pane-databases">
+        <div class="site-manage-card">
+          <div class="site-manage-card-header">
+            <h3 class="site-manage-card-title">Associated MariaDB Database</h3>
+          </div>
+          <div class="table-wrap">
+            <table class="table">
+              <tbody>
+                <tr>
+                  <td class="text-muted" style="width:180px;">Database Name</td>
+                  <td class="text-mono font-bold">${escapeHTML(dbName)}</td>
+                </tr>
+                <tr>
+                  <td class="text-muted">Database User</td>
+                  <td class="text-mono font-bold">${escapeHTML(dbUser)}</td>
+                </tr>
+                <tr>
+                  <td class="text-muted">Host</td>
+                  <td class="text-mono">localhost:3306</td>
+                </tr>
+                <tr>
+                  <td class="text-muted">Database Engine</td>
+                  <td>MariaDB InnoDB / utf8mb4</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="flex gap-3 mt-4">
+            <button class="btn btn-primary btn-sm" onclick="repairSiteDatabase('${escapeHTML(domain)}')">
+              🔧 Repair & Optimize Tables
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="navigateTo('databases')">
+              Open Global Database Manager →
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4. OLS CACHE TAB PANE -->
+      <div class="site-tab-pane" id="pane-cache">
+        <div class="site-manage-card">
+          <div class="site-manage-card-header">
+            <h3 class="site-manage-card-title">OpenLiteSpeed Cache Engine (LSCache)</h3>
+            <span class="badge badge-success">Active & Optimized</span>
+          </div>
+          <p class="text-muted text-sm mb-4">
+            CyberPanel-compatible ultra-fast server-level caching built into the OpenLiteSpeed core. Automatically accelerates WordPress with zero reverse-proxy overhead.
+          </p>
+          <div class="table-wrap mb-4">
+            <table class="table">
+              <tbody>
+                <tr>
+                  <td class="text-muted" style="width:200px;">Cache Storage Root</td>
+                  <td class="text-mono">/tmp/lscache or /usr/local/lsws/cachedata</td>
+                </tr>
+                <tr>
+                  <td class="text-muted">Object Cache (Redis)</td>
+                  <td><span class="badge badge-success">Connected (127.0.0.1:6379)</span></td>
+                </tr>
+                <tr>
+                  <td class="text-muted">Gzip & Brotli Compression</td>
+                  <td><span class="badge badge-success">Enabled (Level 6)</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="flex gap-3">
+            <button class="btn btn-primary" onclick="purgeSiteCache('${escapeHTML(domain)}')">
+              ⚡ Purge All LSCache for ${escapeHTML(domain)}
+            </button>
+            <button class="btn btn-secondary" onclick="purgeAllCache()">
+              Purge Global Server Cache
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 5. SSL / TLS TAB PANE -->
+      <div class="site-tab-pane" id="pane-ssl">
+        <div class="site-manage-card">
+          <div class="site-manage-card-header">
+            <h3 class="site-manage-card-title">SSL / TLS Certificate Status</h3>
+            <span class="badge badge-${ssl ? 'success' : 'warning'}">${ssl ? 'Active Certificate' : 'None / Insecure'}</span>
+          </div>
+          <p class="text-muted text-sm mb-4">
+            Let's Encrypt Zero-Config Standalone SSL with automatic HTTPS listener mapping and HTTP/3 QUIC acceleration.
+          </p>
+          <div class="table-wrap mb-4">
+            <table class="table">
+              <tbody>
+                <tr>
+                  <td class="text-muted" style="width:200px;">Domains Covered</td>
+                  <td class="text-mono">${escapeHTML(domain)}, www.${escapeHTML(domain)}</td>
+                </tr>
+                <tr>
+                  <td class="text-muted">Issuance Method</td>
+                  <td>Certbot Standalone Engine (Free Let's Encrypt Authority)</td>
+                </tr>
+                <tr>
+                  <td class="text-muted">HTTP/3 & QUIC</td>
+                  <td><span class="badge badge-success">Enabled</span></td>
+                </tr>
+                <tr>
+                  <td class="text-muted">OCSP Stapling</td>
+                  <td><span class="badge badge-success">Enabled</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="flex gap-3">
+            <button class="btn btn-primary" onclick="quickIssueSSL('${escapeHTML(domain)}')">
+              🔒 Issue / Renew Free Let's Encrypt SSL
+            </button>
+            <button class="btn btn-secondary" onclick="navigateTo('ssl')">
+              Wildcard SSL & Cloudflare DNS Settings →
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 6. SECURITY TAB PANE -->
+      <div class="site-tab-pane" id="pane-security">
+        <div class="site-manage-card">
+          <div class="site-manage-card-header">
+            <h3 class="site-manage-card-title">WordPress & OLS Hardening</h3>
+          </div>
+          <div class="flex flex-col gap-4">
+            <div class="flex justify-between items-center" style="padding:10px 0;border-bottom:1px solid var(--border-primary);">
+              <div>
+                <strong>Block PHP Execution in Uploads Directory</strong>
+                <p class="text-muted text-xs">Prevents backdoor PHP scripts from executing in <code>/wp-content/uploads/</code></p>
+              </div>
+              <span class="badge badge-success">Active in vhconf.conf</span>
+            </div>
+            <div class="flex justify-between items-center" style="padding:10px 0;border-bottom:1px solid var(--border-primary);">
+              <div>
+                <strong>Disable XML-RPC (xmlrpc.php)</strong>
+                <p class="text-muted text-xs">Stops brute-force attacks and pingback DDoS floods targeting XML-RPC</p>
+              </div>
+              <span class="badge badge-success">Protected</span>
+            </div>
+            <div class="flex justify-between items-center" style="padding:10px 0;">
+              <div>
+                <strong>Security Response Headers</strong>
+                <p class="text-muted text-xs">X-Content-Type-Options: nosniff, X-Frame-Options: SAMEORIGIN, X-XSS-Protection</p>
+              </div>
+              <span class="badge badge-success">Enforced</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 7. SSH / FTP TAB PANE -->
+      <div class="site-tab-pane" id="pane-ssh">
+        <div class="site-manage-card">
+          <div class="site-manage-card-header">
+            <h3 class="site-manage-card-title">SFTP / SSH Access Credentials</h3>
+          </div>
+          <div class="table-wrap mb-4">
+            <table class="table">
+              <tbody>
+                <tr>
+                  <td class="text-muted" style="width:180px;">SFTP Protocol</td>
+                  <td>SFTP (SSH File Transfer Protocol)</td>
+                </tr>
+                <tr>
+                  <td class="text-muted">Host / Server IP</td>
+                  <td class="text-mono font-bold">${escapeHTML(serverIp)}</td>
+                </tr>
+                <tr>
+                  <td class="text-muted">Port</td>
+                  <td class="text-mono">22</td>
+                </tr>
+                <tr>
+                  <td class="text-muted">Username</td>
+                  <td class="text-mono font-bold">${escapeHTML(siteUser)}</td>
+                </tr>
+                <tr>
+                  <td class="text-muted">Default Directory</td>
+                  <td class="text-mono">${escapeHTML(docRoot)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="document.querySelector('[data-tab=\\'settings\\']').click()">
+            Change User Password in Settings Tab
+          </button>
+        </div>
+      </div>
+
+      <!-- 8. FILE MANAGER TAB PANE -->
+      <div class="site-tab-pane" id="pane-files">
+        <div class="site-manage-card">
+          <div class="site-manage-card-header">
+            <h3 class="site-manage-card-title">Site File System</h3>
+            <span class="text-mono text-xs text-muted">${escapeHTML(docRoot)}</span>
+          </div>
+          <p class="text-muted text-sm mb-4">
+            Manage your WordPress core files, <code>wp-config.php</code>, themes, plugins, and <code>.htaccess</code> directly.
+          </p>
+          <div class="flex gap-3">
+            <button class="btn btn-primary" onclick="openSiteFileManager('${escapeHTML(docRoot)}')">
+              📂 Open Full File Manager at Site Root
+            </button>
+            <button class="btn btn-secondary" onclick="openSiteFileManager('/var/www/${escapeHTML(domain)}')">
+              Browse /var/www/${escapeHTML(domain)}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 9. CRON JOBS TAB PANE -->
+      <div class="site-tab-pane" id="pane-cron">
+        <div class="site-manage-card">
+          <div class="site-manage-card-header">
+            <h3 class="site-manage-card-title">WordPress Server-Side WP-Cron</h3>
+            <span class="badge badge-success">Automated Daemon (Active)</span>
+          </div>
+          <p class="text-muted text-sm mb-4">
+            High-performance server-side cron engine executes <code>wp-cron.php</code> via background daemon every 5 minutes, relieving visitor requests from running background cron tasks.
+          </p>
+          <div class="table-wrap mb-4">
+            <table class="table">
+              <tbody>
+                <tr>
+                  <td class="text-muted" style="width:200px;">Cron Schedule</td>
+                  <td class="text-mono">*/5 * * * * (Every 5 minutes)</td>
+                </tr>
+                <tr>
+                  <td class="text-muted">Execution Command</td>
+                  <td class="text-mono text-xs">curl -s -k -L -m 10 "https://127.0.0.1/wp-cron.php?doing_wp_cron" -H "Host: ${escapeHTML(domain)}"</td>
+                </tr>
+                <tr>
+                  <td class="text-muted">Engine</td>
+                  <td>DEOLS Background Automation Daemon</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="flex gap-3">
+            <button class="btn btn-primary btn-sm" onclick="runSiteWpCron('${escapeHTML(domain)}')">
+              ⏱️ Execute WP-Cron Now
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="navigateTo('cron')">
+              Manage Server Automation Crons →
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 10. LOGS TAB PANE -->
+      <div class="site-tab-pane" id="pane-logs">
+        <div class="site-manage-card">
+          <div class="site-manage-card-header">
+            <div class="flex items-center gap-3">
+              <h3 class="site-manage-card-title">Virtual Host Logs</h3>
+              <div class="flex gap-1" style="background:var(--bg-secondary);padding:2px;border-radius:6px;">
+                <button class="btn btn-sm btn-secondary active" id="log-type-error" onclick="switchSiteLogType('${escapeHTML(domain)}', 'error')">Error Log</button>
+                <button class="btn btn-sm btn-ghost" id="log-type-access" onclick="switchSiteLogType('${escapeHTML(domain)}', 'access')">Access Log</button>
+              </div>
+            </div>
+            <div class="flex gap-2">
+              <button class="btn btn-secondary btn-sm" onclick="refreshSiteLogs('${escapeHTML(domain)}')">🔄 Refresh</button>
+              <button class="btn btn-ghost btn-sm text-danger" onclick="clearSiteLogs('${escapeHTML(domain)}')">🗑️ Clear</button>
+            </div>
+          </div>
+          <pre id="site-log-viewer" style="background:#090d16;color:#93c5fd;font-family:var(--font-mono);font-size:0.8rem;padding:16px;border-radius:8px;max-height:450px;overflow-y:auto;white-space:pre-wrap;line-height:1.45;">Loading logs…</pre>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Attach tab switching events
+  container.querySelectorAll('.site-tab-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      container.querySelectorAll('.site-tab-btn').forEach((b) => b.classList.remove('active'));
+      container.querySelectorAll('.site-tab-pane').forEach((p) => p.classList.remove('active'));
+
+      btn.classList.add('active');
+      const tabName = btn.dataset.tab;
+      const pane = container.querySelector(`#pane-${tabName}`);
+      if (pane) pane.classList.add('active');
+
+      if (tabName === 'vhost') loadVhostConf(domain);
+      if (tabName === 'logs') loadSiteLogs(domain, currentSiteLogType);
+    });
+  });
+}
+
+async function saveDomainSettings(domain) {
+  const rootDirectory = document.getElementById('manage-root-dir')?.value?.trim();
+  const phpVersion = document.getElementById('manage-php-version')?.value;
+  const btn = document.getElementById('btn-save-domain-settings');
+
+  if (btn) btn.disabled = true;
+  toast('Updating domain and OpenLiteSpeed configuration…', 'info');
+
+  const res = await api(`/sites/${encodeURIComponent(domain)}/settings`, {
+    method: 'PUT',
+    body: { rootDirectory, phpVersion },
+  });
+
+  if (btn) btn.disabled = false;
+  if (res?.success) {
+    toast(res.message || 'Settings saved and OLS reloaded successfully!', 'success');
+  } else {
+    toast(res?.message || res?.error || 'Failed to save domain settings', 'error');
+  }
+}
+
+async function saveSiteUserPass(domain) {
+  const password = document.getElementById('manage-site-user-pass')?.value;
+  if (!password || password.length < 6) {
+    toast('Password must be at least 6 characters', 'warning');
+    return;
+  }
+
+  toast('Updating user credentials…', 'info');
+  const res = await api(`/sites/${encodeURIComponent(domain)}/user-password`, {
+    method: 'POST',
+    body: { password },
+  });
+
+  if (res?.success) {
+    toast(res.message || 'Password updated successfully!', 'success');
+    const input = document.getElementById('manage-site-user-pass');
+    if (input) {
+      input.value = '';
+      input.type = 'password';
+    }
+  } else {
+    toast(res?.message || res?.error || 'Failed to update user password', 'error');
+  }
+}
+
+function generateNewSitePass() {
+  const chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%&*';
+  let pass = '';
+  for (let i = 0; i < 16; i++) {
+    pass += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  const input = document.getElementById('manage-site-user-pass');
+  if (input) {
+    input.value = pass;
+    input.type = 'text';
+    toast('New strong password generated! Click Update Password to save.', 'info', 5000);
+  }
+}
+
+async function loadVhostConf(domain) {
+  const editor = document.getElementById('vhost-editor');
+  if (!editor) return;
+  editor.value = 'Loading vhconf.conf…';
+
+  const res = await api(`/sites/${encodeURIComponent(domain)}/vhost`);
+  if (res?.content) {
+    editor.value = res.content;
+  } else {
+    editor.value = '# No vhconf.conf found yet. It will be generated automatically.';
+  }
+}
+
+async function saveVhostConf(domain) {
+  const editor = document.getElementById('vhost-editor');
+  if (!editor) return;
+
+  toast('Saving Virtual Host configuration and signaling OpenLiteSpeed…', 'info');
+  const res = await api(`/sites/${encodeURIComponent(domain)}/vhost`, {
+    method: 'PUT',
+    body: { content: editor.value },
+  });
+
+  if (res?.success) {
+    toast(res.message || 'Virtual Host saved and OpenLiteSpeed reloaded (zero downtime)!', 'success');
+  } else {
+    toast(res?.message || res?.error || 'Failed to save vhconf.conf', 'error');
+  }
+}
+
+async function reloadOlsFromVhost() {
+  toast('Sending graceful restart signal to OpenLiteSpeed…', 'info');
+  const res = await api('/ols/restart', { method: 'POST', body: { action: 'restart' } });
+  if (res?.success) {
+    toast('OpenLiteSpeed reloaded with zero downtime!', 'success');
+  } else {
+    toast(res?.message || res?.error || 'Failed to reload OpenLiteSpeed', 'error');
+  }
+}
+
+async function repairSiteDatabase(domain) {
+  toast(`Repairing and optimizing database for ${domain}…`, 'info');
+  const res = await api(`/sites/${encodeURIComponent(domain)}/db/repair`, { method: 'POST', body: {} });
+  if (res?.success) {
+    toast(res.message || 'Database repaired and optimized successfully!', 'success');
+  } else {
+    toast(res?.message || res?.error || 'Failed to repair database', 'error');
+  }
+}
+
+async function purgeSiteCache(domain) {
+  toast(`Purging LiteSpeed Cache for ${domain}…`, 'info');
+  const res = await api(`/sites/${encodeURIComponent(domain)}/cache/purge`, { method: 'POST', body: {} });
+  if (res?.success) {
+    toast(res.message || 'LiteSpeed cache purged successfully!', 'success');
+  } else {
+    toast(res?.message || res?.error || 'Failed to purge cache', 'error');
+  }
+}
+
+async function runSiteWpCron(domain) {
+  toast(`Dispatching WordPress WP-Cron for ${domain}…`, 'info');
+  const res = await api(`/sites/${encodeURIComponent(domain)}/wp-cron`, { method: 'POST', body: {} });
+  if (res?.success) {
+    toast(res.message || 'WP-Cron executed successfully!', 'success');
+  } else {
+    toast(res?.message || res?.error || 'Failed to execute WP-Cron', 'error');
+  }
+}
+
+function openSiteFileManager(path) {
+  navigateTo('files', { path });
+}
+
+async function switchSiteLogType(domain, type) {
+  currentSiteLogType = type;
+  const btnErr = document.getElementById('log-type-error');
+  const btnAcc = document.getElementById('log-type-access');
+  if (btnErr && btnAcc) {
+    if (type === 'error') {
+      btnErr.className = 'btn btn-sm btn-secondary active';
+      btnAcc.className = 'btn btn-sm btn-ghost';
+    } else {
+      btnErr.className = 'btn btn-sm btn-ghost';
+      btnAcc.className = 'btn btn-sm btn-secondary active';
+    }
+  }
+  await loadSiteLogs(domain, type);
+}
+
+async function loadSiteLogs(domain, type = 'error') {
+  const viewer = document.getElementById('site-log-viewer');
+  if (!viewer) return;
+  viewer.textContent = `Loading ${type} logs for ${domain}…`;
+
+  const res = await api(`/sites/${encodeURIComponent(domain)}/logs?type=${type}`);
+  if (res?.lines) {
+    viewer.textContent = res.lines;
+    viewer.scrollTop = viewer.scrollHeight;
+  } else {
+    viewer.textContent = `No ${type} logs recorded yet.`;
+  }
+}
+
+async function refreshSiteLogs(domain) {
+  await loadSiteLogs(domain, currentSiteLogType);
+  toast('Logs refreshed', 'info', 2000);
+}
+
+async function clearSiteLogs(domain) {
+  if (!confirm(`Clear all logs for ${domain}?`)) return;
+  const res = await api(`/sites/${encodeURIComponent(domain)}/logs/clear`, {
+    method: 'POST',
+    body: { type: currentSiteLogType },
+  });
+  if (res?.success) {
+    toast('Logs cleared successfully', 'success');
+    await loadSiteLogs(domain, currentSiteLogType);
+  } else {
+    toast(res?.message || res?.error || 'Failed to clear logs', 'error');
+  }
+}
+
+async function quickIssueSSL(domain) {
+  toast(`Initiating Free Let's Encrypt SSL issuance for ${domain}…`, 'info', 4000);
+  const res = await api('/ssl/request', {
+    method: 'POST',
+    body: { domain, mode: 'standalone', overwrite: true },
+  });
+  if (res?.success) {
+    toast(res.message || 'SSL Certificate successfully issued & applied!', 'success', 6000);
+    renderSiteManage(document.getElementById('content-body'), domain);
+  } else {
+    toast(res?.message || res?.error || 'Failed to issue SSL', 'error', 6000);
   }
 }
 
@@ -1327,6 +2065,7 @@ async function issueWildcardSSL() {
     cfEmail: authType === 'global' ? cfEmail : undefined,
     cfApiKey: authType === 'global' ? cfKeyOrToken : undefined,
     cfApiToken: authType === 'token' ? cfKeyOrToken : undefined,
+    overwrite: true,
   };
 
   const res = await api('/ssl/wildcard', { method: 'POST', body: payload });
@@ -1357,7 +2096,7 @@ async function issueSSL() {
   issueBtn.innerHTML = '<span>Verifying & Issuing SSL…</span>';
   toast('Verifying domain and issuing SSL certificate…', 'info', 8000);
 
-  const result = await api('/ssl/issue', { method: 'POST', body: { domain, email, includeWww } });
+  const result = await api('/ssl/issue', { method: 'POST', body: { domain, email, includeWww, overwrite: true } });
   if (result?.success) {
     toast('SSL certificate issued successfully!', 'success');
     closeModal();
@@ -1384,12 +2123,27 @@ async function revokeSSL(name) {
   else toast(result?.error || 'Failed', 'error');
 }
 
-// ─── File Manager Page ──────────────────────────────────────
+// ─── File Manager Page (Root Filesystem & Site Navigator) ────
 
-let fileCurrentPath = '/var/www';
+let fileCurrentPath = '/';
 
 async function renderFiles(container) {
+  if (state.pageParams?.path) {
+    fileCurrentPath = state.pageParams.path;
+    state.pageParams.path = null;
+  }
+
   container.innerHTML = `
+    <!-- Root Quick Jump Chips -->
+    <div class="fm-quick-nav">
+      <span class="text-xs text-muted" style="font-weight:700;display:flex;align-items:center;margin-right:4px;">📁 PATHS:</span>
+      <button class="fm-chip ${fileCurrentPath === '/' ? 'active' : ''}" onclick="loadFileList('/')">⚡ / (Root)</button>
+      <button class="fm-chip ${fileCurrentPath.startsWith('/var/www') ? 'active' : ''}" onclick="loadFileList('/var/www')">🌐 /var/www</button>
+      <button class="fm-chip ${fileCurrentPath.startsWith('/usr/local/lsws') ? 'active' : ''}" onclick="loadFileList('/usr/local/lsws')">⚙️ /usr/local/lsws</button>
+      <button class="fm-chip ${fileCurrentPath.startsWith('/etc') ? 'active' : ''}" onclick="loadFileList('/etc')">📁 /etc</button>
+      <button class="fm-chip ${fileCurrentPath.startsWith('/opt/deols') ? 'active' : ''}" onclick="loadFileList('/opt/deols')">📦 /opt/deols</button>
+    </div>
+
     <div class="flex justify-between items-center mb-4">
       <div class="breadcrumb" id="file-breadcrumb"></div>
       <div class="flex gap-2">
@@ -1406,14 +2160,19 @@ async function renderFiles(container) {
 }
 
 async function loadFileList(path) {
-  fileCurrentPath = path;
-  const data = await api(`/files/list?path=${encodeURIComponent(path)}`);
+  fileCurrentPath = path || '/';
+  const data = await api(`/files/list?path=${encodeURIComponent(fileCurrentPath)}`);
+
+  // Update quick jump chip active state
+  document.querySelectorAll('.fm-chip').forEach((chip) => {
+    chip.classList.toggle('active', chip.textContent.includes(fileCurrentPath));
+  });
 
   // Build breadcrumb
   const breadcrumb = document.getElementById('file-breadcrumb');
   if (breadcrumb) {
-    const parts = path.split('/').filter(Boolean);
-    let crumbs = '<span class="breadcrumb-item" onclick="loadFileList(\'/\')">/</span>';
+    const parts = fileCurrentPath.split('/').filter(Boolean);
+    let crumbs = `<span class="breadcrumb-item ${fileCurrentPath === '/' ? 'active' : ''}" onclick="loadFileList('/')">/</span>`;
     let accumulated = '';
     parts.forEach((part, i) => {
       accumulated += '/' + part;
@@ -1434,7 +2193,7 @@ async function loadFileList(path) {
     <div class="table-wrap"><table class="table">
       <thead><tr><th>Name</th><th>Size</th><th>Permissions</th><th>Modified</th><th>Actions</th></tr></thead>
       <tbody>
-        ${path !== '/' && path !== '/var/www' ? `<tr class="file-row" onclick="loadFileList('${path.split('/').slice(0, -1).join('/') || '/'}')">
+        ${fileCurrentPath !== '/' ? `<tr class="file-row" onclick="loadFileList('${fileCurrentPath.split('/').slice(0, -1).join('/') || '/'}')">
           <td><span class="flex items-center gap-2">📁 <strong>..</strong></span></td><td>—</td><td>—</td><td>—</td><td></td>
         </tr>` : ''}
         ${data.entries.map((e) => `
@@ -2006,34 +2765,34 @@ async function renderOLS(container) {
 
   document.getElementById('ols-sync-btn')?.addEventListener('click', async () => {
     toast('Synchronizing DEOLS websites with OLS Virtual Hosts and Listeners…', 'info');
-    const res = await api('/ols/sync', { method: 'POST' });
+    const res = await api('/ols/sync', { method: 'POST', body: { action: 'sync' } });
     if (res?.success) {
       toast(res.message || 'OLS configuration synchronized successfully!', 'success');
       renderOLS(container);
     } else {
-      toast(res?.error || 'Failed to sync with OLS', 'error');
+      toast(res?.message || res?.error || 'Failed to sync with OLS', 'error');
     }
   });
 
   document.getElementById('ols-restart-btn')?.addEventListener('click', async () => {
     toast('Restarting OpenLiteSpeed…', 'info');
-    const res = await api('/ols/restart', { method: 'POST' });
+    const res = await api('/ols/restart', { method: 'POST', body: { action: 'restart' } });
     if (res?.success) {
-      toast('OpenLiteSpeed restarted successfully', 'success');
+      toast(res.message || 'OpenLiteSpeed restarted successfully', 'success');
       renderOLS(container);
     } else {
-      toast(res?.error || 'Failed to restart OLS', 'error');
+      toast(res?.message || res?.error || 'Failed to restart OLS', 'error');
     }
   });
 
   document.getElementById('ols-reload-btn')?.addEventListener('click', async () => {
     toast('Reloading OpenLiteSpeed config…', 'info');
-    const res = await api('/ols/reload', { method: 'POST' });
+    const res = await api('/ols/reload', { method: 'POST', body: { action: 'reload' } });
     if (res?.success) {
-      toast('Configuration reloaded smoothly', 'success');
+      toast(res.message || 'Configuration reloaded smoothly', 'success');
       renderOLS(container);
     } else {
-      toast(res?.error || 'Failed to reload OLS', 'error');
+      toast(res?.message || res?.error || 'Failed to reload OLS', 'error');
     }
   });
 

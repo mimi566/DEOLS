@@ -70,6 +70,19 @@ async function bootstrap() {
     }
   });
 
+  app.addContentTypeParser('text/plain', { parseAs: 'string' }, (req, body, done) => {
+    if (!body || body.trim() === '') return done(null, {});
+    try {
+      done(null, JSON.parse(body));
+    } catch {
+      done(null, { text: body });
+    }
+  });
+
+  app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (req, body, done) => {
+    done(null, {});
+  });
+
   // ─── Global Plugins ─────────────────────────────────────
 
   await app.register(fastifyCors, {
@@ -154,6 +167,13 @@ async function bootstrap() {
       root: frontendPath,
       prefix: '/',
       wildcard: false,
+      setHeaders: (res, path) => {
+        if (path.endsWith('.html')) {
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          res.setHeader('Pragma', 'no-cache');
+          res.setHeader('Expires', '0');
+        }
+      },
     });
 
     // SPA fallback — serve index.html for all non-API routes
@@ -161,6 +181,7 @@ async function bootstrap() {
       if (request.url.startsWith('/api/')) {
         return reply.code(404).send({ error: 'Endpoint not found' });
       }
+      reply.header('Cache-Control', 'no-cache, no-store, must-revalidate');
       return reply.sendFile('index.html');
     });
   }

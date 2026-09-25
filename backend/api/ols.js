@@ -89,8 +89,8 @@ export default async function olsRoutes(app) {
     };
   });
 
-  // ─── Restart OpenLiteSpeed ──────────────────────────────
-  app.post('/restart', async (request, reply) => {
+  // ─── Restart OpenLiteSpeed (Zero Downtime) ──────────────
+  const handleRestart = async (request, reply) => {
     const olsRoot = config.olsRoot || '/usr/local/lsws';
     const lswsctrl = config.bin.lswsctrl || join(olsRoot, 'bin', 'lswsctrl');
 
@@ -103,6 +103,7 @@ export default async function olsRoutes(app) {
 
     if (result.code !== 0) {
       return reply.code(500).send({
+        success: false,
         error: 'Failed to restart OpenLiteSpeed',
         details: result.stderr || result.stdout,
       });
@@ -110,13 +111,16 @@ export default async function olsRoutes(app) {
 
     return {
       success: true,
-      message: 'OpenLiteSpeed gracefully restarted',
+      message: 'OpenLiteSpeed gracefully restarted (zero downtime)',
       output: result.stdout,
     };
-  });
+  };
+
+  app.post('/restart', handleRestart);
+  app.get('/restart', handleRestart);
 
   // ─── Reload Config (Zero-Downtime) ──────────────────────
-  app.post('/reload', async (request, reply) => {
+  const handleReload = async (request, reply) => {
     const olsRoot = config.olsRoot || '/usr/local/lsws';
     const lswsctrl = config.bin.lswsctrl || join(olsRoot, 'bin', 'lswsctrl');
 
@@ -132,7 +136,10 @@ export default async function olsRoutes(app) {
       message: result.code === 0 ? 'OpenLiteSpeed configuration reloaded' : 'Reload returned non-zero code',
       output: result.stdout || result.stderr,
     };
-  });
+  };
+
+  app.post('/reload', handleReload);
+  app.get('/reload', handleReload);
 
   // ─── Change OLS WebAdmin Password ────────────────────────
   app.post('/password', async (request, reply) => {

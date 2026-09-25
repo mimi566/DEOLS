@@ -69,7 +69,7 @@ export const config = {
 
   // Binaries
   bin: {
-    certbot: process.env.CERTBOT_BIN || '/usr/bin/certbot',
+    certbot: process.env.CERTBOT_BIN || (existsSync('/usr/bin/certbot') ? '/usr/bin/certbot' : (existsSync('/snap/bin/certbot') ? '/snap/bin/certbot' : 'certbot')),
     wp: process.env.WP_CLI_BIN || '/usr/local/bin/wp',
     git: process.env.GIT_BIN || '/usr/bin/git',
     lswsctrl: process.env.LSWSCTRL_BIN || '/usr/local/lsws/bin/lswsctrl',
