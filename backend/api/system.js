@@ -130,22 +130,52 @@ export default async function systemRoutes(app) {
 
   // ─── Get Server Timezone & Clock ───────────────────────
   app.get('/timezone', async () => {
-    let timezone = 'UTC';
+    let timezone = null;
+
+    // 1. Check DEOLS persisted settings first
     try {
-      if (existsSync('/etc/timezone')) {
-        const content = readFileSync('/etc/timezone', 'utf-8').trim();
-        if (content) timezone = content;
-      } else {
+      const settingsPath = join(config.dataDir, 'settings.json');
+      if (existsSync(settingsPath)) {
+        const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        if (settings.timezone) timezone = settings.timezone;
+      }
+    } catch {}
+
+    // 2. Query timedatectl
+    if (!timezone) {
+      try {
         const res = await shell('timedatectl show -p Timezone --value 2>/dev/null');
         if (res.code === 0 && res.stdout.trim()) {
           timezone = res.stdout.trim();
-        } else {
-          timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
         }
-      }
-    } catch {
-      timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+      } catch {}
     }
+
+    // 3. Check /etc/localtime symlink target (standard Linux)
+    if (!timezone) {
+      try {
+        const linkRes = await shell('readlink -f /etc/localtime 2>/dev/null');
+        if (linkRes.stdout && linkRes.stdout.includes('zoneinfo/')) {
+          timezone = linkRes.stdout.split('zoneinfo/')[1].trim();
+        }
+      } catch {}
+    }
+
+    // 4. Check /etc/timezone file if present
+    if (!timezone && existsSync('/etc/timezone')) {
+      try {
+        const content = readFileSync('/etc/timezone', 'utf-8').trim();
+        if (content) timezone = content;
+      } catch {}
+    }
+
+    // 5. Fallback
+    if (!timezone) {
+      timezone = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    }
+
+    // Ensure Node process environment matches
+    process.env.TZ = timezone;
 
     const now = new Date();
     let formatted = '';
@@ -187,18 +217,30 @@ export default async function systemRoutes(app) {
       return reply.code(400).send({ error: `Invalid timezone identifier: '${cleanTz}'` });
     }
 
-    let details = '';
-    // Apply via timedatectl (standard systemd)
-    const timedateRes = await shell(`timedatectl set-timezone "${cleanTz}" 2>&1`);
-    if (timedateRes.code === 0) {
-      details = 'Applied via timedatectl set-timezone';
-    } else {
-      // Fallback for containers or systems without active systemd-timedated
-      const linkRes = await shell(`ln -sf "/usr/share/zoneinfo/${cleanTz}" /etc/localtime 2>/dev/null && echo "${cleanTz}" > /etc/timezone 2>/dev/null || true`);
-      details = linkRes.code === 0 ? 'Applied via /etc/localtime symlink' : `Runtime timezone configured: ${cleanTz}`;
-    }
+    let details = [];
 
-    // Persist to DEOLS settings
+    // 1. Update systemd timedatectl
+    try {
+      const timedateRes = await shell(`timedatectl set-timezone "${cleanTz}" 2>&1`);
+      if (timedateRes.code === 0) details.push('timedatectl');
+    } catch {}
+
+    // 2. Always sync /etc/localtime symlink
+    try {
+      await shell(`ln -sf "/usr/share/zoneinfo/${cleanTz}" /etc/localtime 2>/dev/null || true`);
+      details.push('/etc/localtime');
+    } catch {}
+
+    // 3. Always update /etc/timezone so legacy tools see it
+    try {
+      await shell(`echo "${cleanTz}" > /etc/timezone 2>/dev/null || true`);
+      details.push('/etc/timezone');
+    } catch {}
+
+    // 4. Update Node.js process runtime timezone environment variable immediately
+    process.env.TZ = cleanTz;
+
+    // 5. Persist to DEOLS settings
     try {
       const settingsPath = join(config.dataDir, 'settings.json');
       let settings = {};
@@ -210,11 +252,31 @@ export default async function systemRoutes(app) {
       writeFileSync(settingsPath, JSON.stringify(settings, null, 2), { mode: 0o600 });
     } catch {}
 
+    const now = new Date();
+    let formatted = '';
+    try {
+      formatted = new Intl.DateTimeFormat('en-US', {
+        timeZone: cleanTz,
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      }).format(now);
+    } catch {
+      formatted = now.toISOString();
+    }
+
     return {
       success: true,
       message: `Server timezone successfully updated to ${cleanTz}`,
       timezone: cleanTz,
-      details,
+      formatted,
+      currentTime: now.toISOString(),
+      timestamp: now.getTime(),
+      details: details.join(', '),
       requiresRestart: true,
     };
   });

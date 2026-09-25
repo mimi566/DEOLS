@@ -14,18 +14,33 @@ const state = {
   statsInterval: null,
 };
 
+// ─── Helpers ────────────────────────────────────────────────
+
+function escapeHTML(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 // ─── API Helper ─────────────────────────────────────────────
 
 async function api(path, opts = {}) {
   const { method = 'GET', body, raw = false } = opts;
-  const headers = { 'Content-Type': 'application/json' };
+  const headers = {};
+  if (body !== undefined && body !== null) {
+    headers['Content-Type'] = 'application/json';
+  }
   if (state.token) headers['Authorization'] = `Bearer ${state.token}`;
 
   try {
     const res = await fetch(`${API}${path}`, {
       method,
       headers,
-      body: body ? JSON.stringify(body) : undefined,
+      body: body !== undefined && body !== null ? JSON.stringify(body) : undefined,
       credentials: 'include',
     });
 
@@ -291,7 +306,7 @@ async function restartOLSHeader() {
   toast('Sending graceful restart signal to OpenLiteSpeed…', 'info', 3500);
 
   try {
-    const res = await api('/ols/restart', { method: 'POST' });
+    const res = await api('/ols/restart', { method: 'POST', body: {} });
     if (res?.success) {
       toast(res.message || 'OpenLiteSpeed gracefully restarted (zero downtime)', 'success', 5000);
       if (state.currentPage === 'ols' || state.currentPage === 'dashboard') {
@@ -394,11 +409,7 @@ const COMMON_TIMEZONES = [
 ];
 
 function showTimezoneModal() {
-  const modal = document.getElementById('modal');
-  const title = document.getElementById('modal-title');
-  const body = modal.querySelector('.modal-body') || modal;
-
-  title.textContent = 'Server Timezone Configuration';
+  const title = 'Server Timezone Configuration';
 
   const now = new Date(Date.now() + serverTimeOffsetMs);
   let formattedTime = '';
@@ -416,7 +427,7 @@ function showTimezoneModal() {
     <option value="${tz.value}" ${tz.value === serverTimezone ? 'selected' : ''}>${tz.label}</option>
   `).join('');
 
-  body.innerHTML = `
+  const bodyHtml = `
     <div id="tz-modal-content">
       <div class="form-group mb-4">
         <label class="form-label">Current Server Clock</label>
@@ -427,7 +438,7 @@ function showTimezoneModal() {
 
       <div class="form-group mb-4">
         <label class="form-label" for="tz-select">Select Server Timezone (IANA)</label>
-        <select id="tz-select" class="input" style="font-family: var(--font-mono); font-size: 0.85rem; padding: 8px 12px;">
+        <select id="tz-select" class="input" style="font-family: var(--font-mono); font-size: 0.85rem; padding: 8px 12px; width: 100%;">
           ${optionsHtml}
         </select>
         <span class="form-hint" style="font-size: 11px; color: var(--text-tertiary); margin-top: 6px; display: block;">
@@ -444,7 +455,7 @@ function showTimezoneModal() {
     </div>
   `;
 
-  document.getElementById('modal-overlay').style.display = 'flex';
+  showModal(title, bodyHtml, '');
 }
 
 async function saveServerTimezone() {
@@ -529,7 +540,7 @@ async function noticeRestartOLS(btn) {
   if (btn) btn.disabled = true;
   toast('Sending graceful restart signal to OpenLiteSpeed…', 'info', 3000);
   try {
-    const res = await api('/ols/restart', { method: 'POST' });
+    const res = await api('/ols/restart', { method: 'POST', body: {} });
     if (res?.success) {
       toast('OpenLiteSpeed restarted successfully (zero downtime)!', 'success', 5000);
       if (btn) btn.innerHTML = '✓ OLS Restarted';
@@ -547,7 +558,7 @@ async function noticeReloadServer(btn) {
   if (btn) btn.disabled = true;
   toast('Dispatching server daemon reload…', 'info', 3000);
   try {
-    const res = await api('/system/reload', { method: 'POST' });
+    const res = await api('/system/reload', { method: 'POST', body: {} });
     if (res?.success) {
       toast('DEOLS server daemon reload signal dispatched!', 'success', 5000);
       if (btn) btn.innerHTML = '✓ Server Reloaded';
