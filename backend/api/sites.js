@@ -83,24 +83,37 @@ export default async function sitesRoutes(app) {
       mkdirSync(docRoot, { recursive: true });
       mkdirSync(logsDir, { recursive: true });
 
-      // 2. Generate DB credentials
-      const dbName = 'wp_' + cleanDomain.replace(/[^a-z0-9]/g, '_').substring(0, 40);
+      // 2. Generate clean DB credentials (alphanumeric only to avoid shell/SQL escaping issues like ^M)
+      const dbName = 'wp_' + cleanDomain.replace(/[^a-z0-9]/g, '_').substring(0, 35);
       const dbUser = 'u_' + cleanDomain.replace(/[^a-z0-9]/g, '_').substring(0, 14);
       const { generatePassword } = await import('../utils/shell.js');
-      const dbPass = generatePassword(20);
+      const dbPass = generatePassword(20, true);
 
-      // 3. Create MariaDB database and user
+      // 3. Create MariaDB database and user with explicit collation and password update
       await shell(
-        `mysql -u root -e "CREATE DATABASE IF NOT EXISTS \\\`${dbName}\\\`; ` +
+        `mysql -u root -e "CREATE DATABASE IF NOT EXISTS \\\`${dbName}\\\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; ` +
         `CREATE USER IF NOT EXISTS '${dbUser}'@'localhost' IDENTIFIED BY '${dbPass}'; ` +
+        `ALTER USER '${dbUser}'@'localhost' IDENTIFIED BY '${dbPass}'; ` +
         `GRANT ALL PRIVILEGES ON \\\`${dbName}\\\`.* TO '${dbUser}'@'localhost'; ` +
-        `FLUSH PRIVILEGES;"`
+        `FLUSH PRIVILEGES;" 2>/dev/null || mariadb -u root -e "CREATE DATABASE IF NOT EXISTS \\\`${dbName}\\\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER IF NOT EXISTS '${dbUser}'@'localhost' IDENTIFIED BY '${dbPass}'; ALTER USER '${dbUser}'@'localhost' IDENTIFIED BY '${dbPass}'; GRANT ALL PRIVILEGES ON \\\`${dbName}\\\`.* TO '${dbUser}'@'localhost'; FLUSH PRIVILEGES;"`
       );
 
-      // 4. Download and extract WordPress core files
+      // 4. Ensure WP-CLI binary exists
+      let wpBin = config.bin.wp || '/usr/local/bin/wp';
+      if (!existsSync(wpBin)) {
+        if (existsSync('/usr/bin/wp')) wpBin = '/usr/bin/wp';
+        else {
+          try {
+            await shell('curl -fsSL -o /usr/local/bin/wp https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar && chmod +x /usr/local/bin/wp 2>/dev/null || true');
+            if (existsSync('/usr/local/bin/wp')) wpBin = '/usr/local/bin/wp';
+          } catch {}
+        }
+      }
+
+      // 5. Download and extract WordPress core files
       let downloaded = false;
       try {
-        const wpDl = await run(config.bin.wp, [
+        const wpDl = await run(wpBin, [
           'core', 'download',
           '--path=' + docRoot,
           '--locale=en_US',
@@ -109,17 +122,16 @@ export default async function sitesRoutes(app) {
         downloaded = wpDl.code === 0 && existsSync(join(docRoot, 'wp-load.php'));
       } catch {}
 
-      // Fallback: If WP-CLI download failed, download official WordPress tarball directly
       if (!downloaded || !existsSync(join(docRoot, 'wp-load.php'))) {
         try {
           await shell(`curl -fsSL https://wordpress.org/latest.tar.gz | tar -xz --strip-components=1 -C "${docRoot}"`);
         } catch {}
       }
 
-      // 5. Create wp-config.php
+      // 6. Create wp-config.php
       let configCreated = false;
       try {
-        const wpCfg = await run(config.bin.wp, [
+        const wpCfg = await run(wpBin, [
           'config', 'create',
           '--path=' + docRoot,
           `--dbname=${dbName}`,
@@ -128,12 +140,13 @@ export default async function sitesRoutes(app) {
           '--dbhost=localhost',
           '--dbprefix=wp_',
           '--allow-root',
+          '--force',
         ], { cwd: docRoot });
         configCreated = wpCfg.code === 0 && existsSync(join(docRoot, 'wp-config.php'));
       } catch {}
 
       // Fallback: Write wp-config.php manually if needed
-      if (!configCreated && !existsSync(join(docRoot, 'wp-config.php'))) {
+      if (!configCreated || !existsSync(join(docRoot, 'wp-config.php'))) {
         const wpConfigContent = `<?php
 define( 'DB_NAME', '${dbName}' );
 define( 'DB_USER', '${dbUser}' );
@@ -162,27 +175,30 @@ require_once ABSPATH . 'wp-settings.php';
         writeFileSync(join(docRoot, 'wp-config.php'), wpConfigContent);
       }
 
-      const siteAdminPass = adminPassword || generatePassword(16);
+      // 7. Install WordPress core database tables & Admin user
+      const siteAdminUser = adminUser && adminUser.trim() ? adminUser.trim() : 'admin';
+      const siteAdminPass = adminPassword && adminPassword.trim() ? adminPassword.trim() : generatePassword(16, true);
+      const siteAdminEmail = adminEmail && adminEmail.trim() ? adminEmail.trim() : `admin@${cleanDomain}`;
+      const siteTitleStr = siteTitle && siteTitle.trim() ? siteTitle.trim() : cleanDomain;
 
-      // 6. Install WordPress via WP-CLI
       try {
-        await run(config.bin.wp, [
+        await run(wpBin, [
           'core', 'install',
           '--path=' + docRoot,
           `--url=http://${cleanDomain}`,
-          `--title=${siteTitle}`,
-          `--admin_user=${adminUser}`,
-          `--admin_email=${adminEmail}`,
+          `--title=${siteTitleStr}`,
+          `--admin_user=${siteAdminUser}`,
+          `--admin_email=${siteAdminEmail}`,
           `--admin_password=${siteAdminPass}`,
           '--skip-email',
           '--allow-root',
         ], { cwd: docRoot });
       } catch {}
 
-      // 7. Install LiteSpeed Cache plugin
+      // 8. Install LiteSpeed Cache plugin
       if (enableLSCache) {
         try {
-          await run(config.bin.wp, [
+          await run(wpBin, [
             'plugin', 'install', 'litespeed-cache',
             '--activate',
             '--path=' + docRoot,
@@ -191,28 +207,28 @@ require_once ABSPATH . 'wp-settings.php';
         } catch {}
       }
 
-      // 8. Set correct file permissions
-      await shell(`chown -R nobody:nogroup "${siteRoot}"`);
+      // 9. Set correct file permissions
+      await shell(`chown -R nobody:nogroup "${siteRoot}" 2>/dev/null || true`);
       await shell(`find "${docRoot}" -type d -exec chmod 755 {} \\; 2>/dev/null || true`);
       await shell(`find "${docRoot}" -type f -exec chmod 644 {} \\; 2>/dev/null || true`);
 
-      // 7. Ensure OLS dual listeners (Default :80 and DefaultHTTPS :443) exist
+      // 10. Ensure OLS dual listeners (Default :80 and DefaultHTTPS :443) exist
       ensureOlsListeners();
 
-      // 8. Generate CyberPanel-compatible OLS Virtual Host config with isolated PHP socket
+      // 11. Generate CyberPanel-compatible OLS Virtual Host config with isolated PHP socket
       const vhostConfDir = join(config.vhostsDir, cleanDomain);
       mkdirSync(vhostConfDir, { recursive: true });
 
       const vhconfContent = generateCyberpanelVhConf(cleanDomain, docRoot, logsDir, phpVersion, enableWildcard);
       writeFileSync(join(vhostConfDir, 'vhconf.conf'), vhconfContent);
 
-      // 9. Add Virtual Host to OLS and map to both port 80 and port 443 listeners
+      // 12. Add Virtual Host to OLS and map to both port 80 and port 443 listeners
       addVirtualHostToOls(cleanDomain, enableWildcard);
 
-      // 10. Graceful restart OLS
+      // 13. Graceful restart OLS
       await run(config.bin.lswsctrl, ['restart']);
 
-      // 10. Save site record
+      // 14. Save site record
       const site = {
         id: crypto.randomUUID(),
         domain: cleanDomain,
@@ -225,8 +241,9 @@ require_once ABSPATH . 'wp-settings.php';
         lsCache: enableLSCache,
         status: 'active',
         createdAt: new Date().toISOString(),
-        adminUser,
+        adminUser: siteAdminUser,
         adminPassword: siteAdminPass,
+        adminEmail: siteAdminEmail,
       };
 
       sites.push(site);
@@ -236,11 +253,13 @@ require_once ABSPATH . 'wp-settings.php';
         success: true,
         site,
         credentials: {
-          wpAdmin: adminUser,
+          wpAdmin: siteAdminUser,
           wpPassword: siteAdminPass,
+          adminEmail: siteAdminEmail,
           dbName,
           dbUser,
           dbPassword: dbPass,
+          loginUrl: `http://${cleanDomain}/wp-admin/`,
         },
       };
     } catch (err) {

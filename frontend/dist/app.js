@@ -861,12 +861,19 @@ function showNewSiteModal() {
       </div>
       <div class="form-row">
         <div class="form-group">
-          <label>WP Admin User</label>
+          <label>WP Admin Username</label>
           <input type="text" id="new-admin" placeholder="admin" value="admin">
         </div>
         <div class="form-group">
-          <label>Admin Email</label>
+          <label>WP Admin Email</label>
           <input type="email" id="new-email" placeholder="admin@example.com">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>WP Admin Password</label>
+        <div style="display: flex; gap: 8px;">
+          <input type="text" id="new-password" placeholder="Leave blank to auto-generate password" style="flex:1;">
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-gen-wp-pass">Generate</button>
         </div>
       </div>
       <div class="flex gap-4 items-center">
@@ -882,26 +889,40 @@ function showNewSiteModal() {
     <button class="btn btn-primary" id="btn-create-site">Create Site</button>
   `);
 
+  document.getElementById('btn-gen-wp-pass')?.addEventListener('click', () => {
+    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let pass = '';
+    for (let i = 0; i < 16; i++) pass += chars.charAt(Math.floor(Math.random() * chars.length));
+    document.getElementById('new-password').value = pass;
+  });
+
   document.getElementById('btn-create-site').addEventListener('click', async () => {
+    const domain = document.getElementById('new-domain').value.trim();
+    if (!domain) {
+      toast('Please enter a valid domain name', 'warning');
+      return;
+    }
+
     const btn = document.getElementById('btn-create-site');
     btn.disabled = true;
-    btn.textContent = 'Provisioning…';
+    btn.textContent = 'Provisioning & Installing WordPress…';
 
     const result = await api('/sites', {
       method: 'POST',
       body: {
-        domain: document.getElementById('new-domain').value,
+        domain,
         phpVersion: document.getElementById('new-php').value,
         siteTitle: document.getElementById('new-title').value || 'My WordPress Site',
         adminUser: document.getElementById('new-admin').value || 'admin',
-        adminEmail: document.getElementById('new-email').value,
+        adminEmail: document.getElementById('new-email').value || `admin@${domain}`,
+        adminPassword: document.getElementById('new-password').value.trim() || undefined,
         enableWildcard: document.getElementById('new-wildcard').checked,
       },
     });
 
     if (result?.success) {
-      toast(`Site ${result.site.domain} created successfully!`, 'success');
-      closeModal();
+      toast(`Site ${result.site.domain} created & WordPress installed!`, 'success');
+      showSiteCredentialsModal(result);
       navigateTo('sites');
     } else {
       toast(result?.error || 'Failed to create site', 'error');
@@ -909,6 +930,29 @@ function showNewSiteModal() {
       btn.textContent = 'Create Site';
     }
   });
+}
+
+function showSiteCredentialsModal(res) {
+  const creds = res.credentials || {};
+  const site = res.site || {};
+  showModal('🎉 Site Created & Installed', `
+    <div style="display:flex; flex-direction:column; gap:16px;">
+      <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); color: #34d399; border-radius:8px; padding:12px 16px; font-size:13px; line-height:1.5;">
+        WordPress is 100% installed and ready! You can login directly without going through manual setup.
+      </div>
+      <table style="width:100%; border-collapse:collapse; font-size:13px; color:var(--text-primary);">
+        <tr style="border-bottom:1px solid var(--border-color,#334155);"><td style="padding:8px 0; font-weight:600; width:140px;">Site Domain:</td><td>${escapeHTML(site.domain)}</td></tr>
+        <tr style="border-bottom:1px solid var(--border-color,#334155);"><td style="padding:8px 0; font-weight:600;">WP Admin URL:</td><td><a href="${escapeHTML(creds.loginUrl || 'http://' + site.domain + '/wp-admin/')}" target="_blank" style="color:#38bdf8; text-decoration:underline;">${escapeHTML(creds.loginUrl || 'http://' + site.domain + '/wp-admin/')}</a></td></tr>
+        <tr style="border-bottom:1px solid var(--border-color,#334155);"><td style="padding:8px 0; font-weight:600;">WP Admin User:</td><td><code style="background:rgba(0,0,0,0.3); padding:2px 6px; border-radius:4px; font-family:monospace; color:#a78bfa;">${escapeHTML(creds.wpAdmin)}</code></td></tr>
+        <tr style="border-bottom:1px solid var(--border-color,#334155);"><td style="padding:8px 0; font-weight:600;">WP Admin Pass:</td><td><code style="background:rgba(0,0,0,0.3); padding:2px 6px; border-radius:4px; font-family:monospace; color:#a78bfa;">${escapeHTML(creds.wpPassword)}</code></td></tr>
+        <tr style="border-bottom:1px solid var(--border-color,#334155);"><td style="padding:8px 0; font-weight:600;">DB Name:</td><td><code style="background:rgba(0,0,0,0.3); padding:2px 6px; border-radius:4px; font-family:monospace;">${escapeHTML(creds.dbName)}</code></td></tr>
+        <tr style="border-bottom:1px solid var(--border-color,#334155);"><td style="padding:8px 0; font-weight:600;">DB User:</td><td><code style="background:rgba(0,0,0,0.3); padding:2px 6px; border-radius:4px; font-family:monospace;">${escapeHTML(creds.dbUser)}</code></td></tr>
+        <tr><td style="padding:8px 0; font-weight:600;">DB Password:</td><td><code style="background:rgba(0,0,0,0.3); padding:2px 6px; border-radius:4px; font-family:monospace;">${escapeHTML(creds.dbPassword)}</code></td></tr>
+      </table>
+    </div>
+  `, `
+    <button class="btn btn-primary" onclick="closeModal()">Done</button>
+  `);
 }
 
 async function repairPerms(domain) {

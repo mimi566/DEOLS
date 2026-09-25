@@ -92,11 +92,13 @@ export function spawnProcess(binary, args = [], opts = {}) {
 /**
  * Generate a cryptographically secure random password.
  * @param {number} length - Password length
+ * @param {boolean} safeMode - If true, use clean alphanumeric characters (recommended for SQL/Shell)
  * @returns {string}
  */
-export function generatePassword(length = 24) {
-  const chars =
-    'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%&*';
+export function generatePassword(length = 24, safeMode = true) {
+  const chars = safeMode
+    ? 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+    : 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%&*';
   const bytes = randomBytes(length);
   let password = '';
   for (let i = 0; i < length; i++) {
