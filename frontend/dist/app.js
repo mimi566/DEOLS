@@ -631,12 +631,6 @@ function timeAgo(dateStr) {
   return `${Math.floor(seconds / 86400)}d ago`;
 }
 
-function escapeHTML(str) {
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
-}
-
 // ─── Page Renderers ─────────────────────────────────────────
 
 async function renderDashboard(container) {
