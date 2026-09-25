@@ -103,7 +103,7 @@ document.getElementById('modal-overlay').addEventListener('click', (e) => {
 // ─── Theme Toggle ───────────────────────────────────────────
 
 function initTheme() {
-  const saved = localStorage.getItem('deols_theme') || 'dark';
+  const saved = localStorage.getItem('deols_theme') || 'light';
   document.documentElement.setAttribute('data-theme', saved);
 }
 
@@ -1177,32 +1177,55 @@ function renderSSLErrorFallback(domain, errData) {
   const serverIp = errData?.serverIp || 'This Server IP';
   const resolvedIps = errData?.resolvedIps?.length ? errData.resolvedIps.join(', ') : 'Not resolved / None';
   const dnsCheckerUrl = errData?.dnsCheckerUrl || `https://dnschecker.org/#A/${encodeURIComponent(domain)}`;
+  const isDnsMismatch = errData?.dnsMismatch === true;
 
   alertEl.style.display = 'block';
-  alertEl.innerHTML = `
-    <div style="background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 8px; padding: 14px; margin-top: 14px; font-size: 13px;">
-      <div style="color: #f87171; font-weight: 700; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
-        <svg viewBox="0 0 20 20" fill="currentColor" style="width: 16px; height: 16px; flex-shrink:0;"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"/></svg>
-        <span>SSL Verification Failed: Domain Not Pointing to This Server</span>
+  if (isDnsMismatch) {
+    alertEl.innerHTML = `
+      <div style="background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 8px; padding: 14px; margin-top: 14px; font-size: 13px;">
+        <div style="color: #f87171; font-weight: 700; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
+          <svg viewBox="0 0 20 20" fill="currentColor" style="width: 16px; height: 16px; flex-shrink:0;"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"/></svg>
+          <span>SSL Verification Failed: Domain Not Pointing to This Server</span>
+        </div>
+        <p style="color: var(--text-secondary, #94a3b8); margin-bottom: 10px; line-height: 1.4;">
+          Let's Encrypt could not verify ownership of <strong>${escapeHTML(domain)}</strong>. Your domain may not be pointing to this server IP yet, or DNS has not propagated worldwide.
+        </p>
+        <div style="background: rgba(0,0,0,0.35); border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; font-family: var(--font-mono, monospace); font-size: 12px; line-height: 1.6;">
+          <div>• Required Server IP: <strong style="color: #34d399;">${escapeHTML(serverIp)}</strong></div>
+          <div>• Domain Currently Resolves To: <strong style="color: #f87171;">${escapeHTML(resolvedIps)}</strong></div>
+        </div>
+        <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+          <a href="${dnsCheckerUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-sm" style="background: #0284c7; color: #fff; text-decoration: none; padding: 6px 14px; font-size: 12px; font-weight: 600; border-radius: 6px; display: inline-flex; align-items: center; gap: 6px;">
+            <span>🌐 Check DNS Worldwide on DNSChecker.org</span>
+            <svg viewBox="0 0 20 20" fill="currentColor" style="width: 12px; height: 12px;"><path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z"/><path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z"/></svg>
+          </a>
+        </div>
+        <p style="font-size: 11px; color: var(--text-muted, #64748b); margin-top: 10px; margin-bottom: 0;">
+          💡 <strong>Fix:</strong> Please update your DNS A-Record to point to <code>${escapeHTML(serverIp)}</code>, wait 5 minutes, verify propagation on DNSChecker.org, and click retry.
+        </p>
       </div>
-      <p style="color: var(--text-secondary, #94a3b8); margin-bottom: 10px; line-height: 1.4;">
-        Let's Encrypt could not verify ownership of <strong>${escapeHTML(domain)}</strong>. Your domain may not be pointing to this server IP yet, or DNS has not propagated worldwide.
-      </p>
-      <div style="background: rgba(0,0,0,0.35); border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; font-family: var(--font-mono, monospace); font-size: 12px; line-height: 1.6;">
-        <div>• Required Server IP: <strong style="color: #34d399;">${escapeHTML(serverIp)}</strong></div>
-        <div>• Domain Currently Resolves To: <strong style="color: #f87171;">${escapeHTML(resolvedIps)}</strong></div>
+    `;
+  } else {
+    alertEl.innerHTML = `
+      <div style="background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 8px; padding: 14px; margin-top: 14px; font-size: 13px;">
+        <div style="color: #f59e0b; font-weight: 700; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
+          <svg viewBox="0 0 20 20" fill="currentColor" style="width: 16px; height: 16px; flex-shrink:0;"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z"/></svg>
+          <span>SSL Issuance Failed: Verification / Firewall Block</span>
+        </div>
+        <p style="color: var(--text-secondary, #94a3b8); margin-bottom: 10px; line-height: 1.4;">
+          Your domain <strong>${escapeHTML(domain)}</strong> correctly resolves to this server IP (<code>${escapeHTML(serverIp)}</code>), but the Let's Encrypt validation server could not verify port 80.
+        </p>
+        ${errData?.details ? `
+          <div style="background: rgba(0,0,0,0.35); border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; font-family: var(--font-mono, monospace); font-size: 11px; max-height: 120px; overflow-y: auto; color: #fca5a5;">
+            ${escapeHTML(errData.details)}
+          </div>
+        ` : ''}
+        <p style="font-size: 11px; color: var(--text-muted, #64748b); margin-top: 6px; margin-bottom: 0;">
+          💡 <strong>Fix:</strong> Ensure port 80 and 443 are open in your VPS firewall / security group and not blocked by external rules.
+        </p>
       </div>
-      <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-        <a href="${dnsCheckerUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-sm" style="background: #0284c7; color: #fff; text-decoration: none; padding: 6px 14px; font-size: 12px; font-weight: 600; border-radius: 6px; display: inline-flex; align-items: center; gap: 6px;">
-          <span>🌐 Check DNS Worldwide on DNSChecker.org</span>
-          <svg viewBox="0 0 20 20" fill="currentColor" style="width: 12px; height: 12px;"><path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z"/><path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z"/></svg>
-        </a>
-      </div>
-      <p style="font-size: 11px; color: var(--text-muted, #64748b); margin-top: 10px; margin-bottom: 0;">
-        💡 <strong>Fix:</strong> Please update your DNS A-Record to point to <code>${escapeHTML(serverIp)}</code>, wait 5 minutes, verify propagation on DNSChecker.org, and click retry.
-      </p>
-    </div>
-  `;
+    `;
+  }
 }
 
 async function testCloudflareConnection() {

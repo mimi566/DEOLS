@@ -92,48 +92,48 @@
 /* ─── Light Theme ─────────────────────────────────────────── */
 
 [data-theme="light"] {
-  --bg-primary: #f7f8fc;
+  --bg-primary: #f8fafc;
   --bg-secondary: #ffffff;
-  --bg-tertiary: #f0f1f5;
+  --bg-tertiary: #f1f5f9;
   --bg-elevated: #ffffff;
-  --bg-card: rgba(255, 255, 255, 0.9);
-  --bg-card-hover: rgba(255, 255, 255, 1);
-  --bg-input: #f0f1f5;
-  --bg-sidebar: #fdfdff;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f8fafc;
+  --bg-input: #f8fafc;
+  --bg-sidebar: #ffffff;
 
-  --border-primary: rgba(0, 0, 0, 0.06);
-  --border-secondary: rgba(0, 0, 0, 0.1);
-  --border-hover: rgba(99, 102, 241, 0.4);
+  --border-primary: #e2e8f0;
+  --border-secondary: #cbd5e1;
+  --border-hover: rgba(99, 102, 241, 0.5);
 
-  --text-primary: #111827;
-  --text-secondary: #6b7280;
-  --text-tertiary: #9ca3af;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-tertiary: #64748b;
   --text-inverse: #ffffff;
 
-  --accent-primary: #6366f1;
-  --accent-primary-hover: #4f46e5;
+  --accent-primary: #4f46e5;
+  --accent-primary-hover: #4338ca;
   --accent-secondary: #7c3aed;
-  --accent-gradient: linear-gradient(135deg, #6366f1, #7c3aed, #9333ea);
+  --accent-gradient: linear-gradient(135deg, #4f46e5, #7c3aed, #9333ea);
 
   --success: #059669;
-  --success-bg: rgba(5, 150, 105, 0.08);
+  --success-bg: rgba(5, 150, 105, 0.1);
   --warning: #d97706;
-  --warning-bg: rgba(217, 119, 6, 0.08);
+  --warning-bg: rgba(217, 119, 6, 0.1);
   --danger: #dc2626;
-  --danger-bg: rgba(220, 38, 38, 0.08);
+  --danger-bg: rgba(220, 38, 38, 0.1);
   --info: #2563eb;
-  --info-bg: rgba(37, 99, 235, 0.08);
+  --info-bg: rgba(37, 99, 235, 0.1);
 
-  --glass-bg: rgba(255, 255, 255, 0.8);
-  --glass-border: rgba(0, 0, 0, 0.06);
+  --glass-bg: rgba(255, 255, 255, 0.95);
+  --glass-border: #e2e8f0;
   --glass-blur: blur(20px);
 
-  --scrollbar-track: #f0f1f5;
-  --scrollbar-thumb: #d1d5db;
+  --scrollbar-track: #f1f5f9;
+  --scrollbar-thumb: #cbd5e1;
 
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.06);
-  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.08);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.07);
+  --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.08);
 }
 
 /* ─── Reset & Base ────────────────────────────────────────── */

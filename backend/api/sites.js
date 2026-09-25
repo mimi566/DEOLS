@@ -95,49 +95,104 @@ export default async function sitesRoutes(app) {
         `FLUSH PRIVILEGES;"`
       );
 
-      // 4. Download and configure WordPress via WP-CLI
-      await run(config.bin.wp, [
-        'core', 'download',
-        '--path=' + docRoot,
-        '--locale=en_US',
-      ], { cwd: docRoot });
+      // 4. Download and extract WordPress core files
+      let downloaded = false;
+      try {
+        const wpDl = await run(config.bin.wp, [
+          'core', 'download',
+          '--path=' + docRoot,
+          '--locale=en_US',
+          '--allow-root',
+        ], { cwd: docRoot });
+        downloaded = wpDl.code === 0 && existsSync(join(docRoot, 'wp-load.php'));
+      } catch {}
 
-      await run(config.bin.wp, [
-        'config', 'create',
-        '--path=' + docRoot,
-        `--dbname=${dbName}`,
-        `--dbuser=${dbUser}`,
-        `--dbpass=${dbPass}`,
-        '--dbhost=localhost',
-        '--dbprefix=wp_',
-      ], { cwd: docRoot });
+      // Fallback: If WP-CLI download failed, download official WordPress tarball directly
+      if (!downloaded || !existsSync(join(docRoot, 'wp-load.php'))) {
+        try {
+          await shell(`curl -fsSL https://wordpress.org/latest.tar.gz | tar -xz --strip-components=1 -C "${docRoot}"`);
+        } catch {}
+      }
+
+      // 5. Create wp-config.php
+      let configCreated = false;
+      try {
+        const wpCfg = await run(config.bin.wp, [
+          'config', 'create',
+          '--path=' + docRoot,
+          `--dbname=${dbName}`,
+          `--dbuser=${dbUser}`,
+          `--dbpass=${dbPass}`,
+          '--dbhost=localhost',
+          '--dbprefix=wp_',
+          '--allow-root',
+        ], { cwd: docRoot });
+        configCreated = wpCfg.code === 0 && existsSync(join(docRoot, 'wp-config.php'));
+      } catch {}
+
+      // Fallback: Write wp-config.php manually if needed
+      if (!configCreated && !existsSync(join(docRoot, 'wp-config.php'))) {
+        const wpConfigContent = `<?php
+define( 'DB_NAME', '${dbName}' );
+define( 'DB_USER', '${dbUser}' );
+define( 'DB_PASSWORD', '${dbPass}' );
+define( 'DB_HOST', 'localhost' );
+define( 'DB_CHARSET', 'utf8mb4' );
+define( 'DB_COLLATE', '' );
+
+define( 'AUTH_KEY',         '${dbPass}_auth' );
+define( 'SECURE_AUTH_KEY',  '${dbPass}_sec' );
+define( 'LOGGED_IN_KEY',    '${dbPass}_log' );
+define( 'NONCE_KEY',        '${dbPass}_non' );
+define( 'AUTH_SALT',        '${dbPass}_asalt' );
+define( 'SECURE_AUTH_SALT', '${dbPass}_ssalt' );
+define( 'LOGGED_IN_SALT',   '${dbPass}_lsalt' );
+define( 'NONCE_SALT',       '${dbPass}_nsalt' );
+
+$table_prefix = 'wp_';
+define( 'WP_DEBUG', false );
+
+if ( ! defined( 'ABSPATH' ) ) {
+  define( 'ABSPATH', __DIR__ . '/' );
+}
+require_once ABSPATH . 'wp-settings.php';
+`;
+        writeFileSync(join(docRoot, 'wp-config.php'), wpConfigContent);
+      }
 
       const siteAdminPass = adminPassword || generatePassword(16);
 
-      await run(config.bin.wp, [
-        'core', 'install',
-        '--path=' + docRoot,
-        `--url=https://${cleanDomain}`,
-        `--title=${siteTitle}`,
-        `--admin_user=${adminUser}`,
-        `--admin_email=${adminEmail}`,
-        `--admin_password=${siteAdminPass}`,
-        '--skip-email',
-      ], { cwd: docRoot });
-
-      // 5. Install LiteSpeed Cache plugin
-      if (enableLSCache) {
+      // 6. Install WordPress via WP-CLI
+      try {
         await run(config.bin.wp, [
-          'plugin', 'install', 'litespeed-cache',
-          '--activate',
+          'core', 'install',
           '--path=' + docRoot,
+          `--url=http://${cleanDomain}`,
+          `--title=${siteTitle}`,
+          `--admin_user=${adminUser}`,
+          `--admin_email=${adminEmail}`,
+          `--admin_password=${siteAdminPass}`,
+          '--skip-email',
+          '--allow-root',
         ], { cwd: docRoot });
+      } catch {}
+
+      // 7. Install LiteSpeed Cache plugin
+      if (enableLSCache) {
+        try {
+          await run(config.bin.wp, [
+            'plugin', 'install', 'litespeed-cache',
+            '--activate',
+            '--path=' + docRoot,
+            '--allow-root',
+          ], { cwd: docRoot });
+        } catch {}
       }
 
-      // 6. Set correct file permissions
-      await shell(`chown -R nobody:nogroup ${siteRoot}`);
-      await shell(`find ${docRoot} -type d -exec chmod 755 {} \\;`);
-      await shell(`find ${docRoot} -type f -exec chmod 644 {} \\;`);
+      // 8. Set correct file permissions
+      await shell(`chown -R nobody:nogroup "${siteRoot}"`);
+      await shell(`find "${docRoot}" -type d -exec chmod 755 {} \\; 2>/dev/null || true`);
+      await shell(`find "${docRoot}" -type f -exec chmod 644 {} \\; 2>/dev/null || true`);
 
       // 7. Ensure OLS dual listeners (Default :80 and DefaultHTTPS :443) exist
       ensureOlsListeners();

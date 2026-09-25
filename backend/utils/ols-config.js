@@ -38,14 +38,27 @@ listener Default {
     }
   }
 
-  // 2. Ensure listener DefaultHTTPS (Port 443) exists
-  const hasPort443Listener = /listener\s+DefaultHTTPS\s*\{/i.test(content) || /listener\s+[^\r\n]+\s*\{[^}]*address\s+[*0-9.:]*:443\b/s.test(content);
+  // 2. Clean up conflicting or empty DefaultHTTPS listener if HTTPS listener already exists
+  if (/listener\s+DefaultHTTPS\s*\{/i.test(content)) {
+    if (/listener\s+HTTPS\s*\{/i.test(content)) {
+      // Both exist: remove duplicate DefaultHTTPS block
+      content = content.replace(/\n?listener\s+DefaultHTTPS\s*\{[^}]*\}/s, '');
+      modified = true;
+    } else {
+      // Rename DefaultHTTPS to canonical HTTPS
+      content = content.replace(/listener\s+DefaultHTTPS\s*\{/i, 'listener HTTPS {');
+      modified = true;
+    }
+  }
+
+  // 3. Ensure canonical listener HTTPS (Port 443) exists
+  const hasPort443Listener = /listener\s+HTTPS\s*\{/i.test(content) || /listener\s+[^\r\n]+\s*\{[^}]*address\s+[*0-9.:]*:443\b/s.test(content);
   if (!hasPort443Listener) {
     const certPath = join(config.olsRoot, 'admin', 'conf', 'webadmin.crt');
     const keyPath = join(config.olsRoot, 'admin', 'conf', 'webadmin.key');
 
     const defaultPort443Block = `
-listener DefaultHTTPS {
+listener HTTPS {
   address                 *:443
   binding                 *:443
   secure                  1
@@ -123,6 +136,7 @@ export function addVirtualHostToOls(domain, enableWildcard = false) {
 
   // Map to both HTTP (:80) and HTTPS (:443)
   updateListener('Default', 80);
+  updateListener('HTTPS', 443);
   updateListener('DefaultHTTPS', 443);
 
   writeFileSync(httpdConf, content);

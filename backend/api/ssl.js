@@ -139,73 +139,111 @@ export default async function sslRoutes(app) {
     if (!domain) return reply.code(400).send({ error: 'Domain required' });
 
     const cleanDomain = domain.replace(/^\*\./, '').toLowerCase().trim();
-    const docRoot = join(config.webRoot, cleanDomain, 'html');
-    const legacyDocRoot = join(config.webRoot, cleanDomain, 'public_html');
-    const targetRoot = existsSync(docRoot) ? docRoot : (existsSync(legacyDocRoot) ? legacyDocRoot : null);
+    const siteRoot = join(config.webRoot, cleanDomain);
+    const docRoot = join(siteRoot, 'public_html');
+    const legacyDocRoot = join(siteRoot, 'html');
+    const targetRoot = existsSync(docRoot) ? docRoot : (existsSync(legacyDocRoot) ? legacyDocRoot : siteRoot);
 
-    if (!targetRoot) {
-      return reply.code(404).send({ error: `Site document root not found for ${cleanDomain}` });
+    // 1. DNS Pre-check
+    const dnsInfo = await checkDomainDNS(cleanDomain);
+
+    // Only include www subdomain if it actually resolves to this server IP
+    let includeWwwVerified = false;
+    if (includeWww) {
+      try {
+        const wwwIps = await dnsPromises.resolve4(`www.${cleanDomain}`);
+        if (dnsInfo.serverIp && wwwIps.includes(dnsInfo.serverIp)) {
+          includeWwwVerified = true;
+        }
+      } catch {}
     }
 
     const domains = ['-d', cleanDomain];
-    if (includeWww) domains.push('-d', `www.${cleanDomain}`);
+    if (includeWwwVerified) {
+      domains.push('-d', `www.${cleanDomain}`);
+    }
+
+    let certResult;
+
+    // 2. Stop OpenLiteSpeed to free up ports 80/443 for Certbot Standalone verification
+    try {
+      await shell('systemctl stop lsws 2>/dev/null || /usr/local/lsws/bin/lswsctrl stop 2>/dev/null || true');
+    } catch {}
 
     try {
-      const result = await run(config.bin.certbot, [
+      // 3. Generate certificate via certbot standalone mode
+      certResult = await run(config.bin.certbot, [
         'certonly',
-        '--webroot',
-        '-w', targetRoot,
+        '--standalone',
+        '--preferred-challenges', 'http',
         ...domains,
         '--email', email || `admin@${cleanDomain}`,
         '--agree-tos',
         '--non-interactive',
-        '--deploy-hook', `${config.bin.lswsctrl} restart`,
       ], { timeout: 120_000 });
-
-      if (result.code !== 0) {
-        const dnsInfo = await checkDomainDNS(cleanDomain);
-        return reply.code(400).send({
-          error: 'SSL certificate verification failed.',
-          details: result.stderr || result.stdout,
-          dnsMismatch: !dnsInfo.matches,
-          serverIp: dnsInfo.serverIp,
-          resolvedIps: dnsInfo.resolvedIps,
-          dnsCheckerUrl: dnsInfo.dnsCheckerUrl,
-          suggestion: !dnsInfo.matches
-            ? `Your domain "${cleanDomain}" does not appear to point to this server IP (${dnsInfo.serverIp || 'unknown'}). It currently resolves to [${dnsInfo.resolvedIps.join(', ') || 'nowhere'}]. Please check your DNS on https://dnschecker.org/#A/${cleanDomain}`
-            : `Domain resolves to server IP, but HTTP-01 verification failed. Ensure port 80 is not blocked by a firewall.`,
-        });
-      }
-
-      // Update OLS vhost to use SSL cert and ensure both port 80 & 443 listeners are mapped
-      updateVirtualHostSSL(cleanDomain, false);
-
-      // Restart OLS
-      await run(config.bin.lswsctrl, ['restart']);
-
-      // Update site record
-      const sites = loadSites();
-      const idx = sites.findIndex((s) => s.domain === cleanDomain);
-      if (idx !== -1) {
-        sites[idx].ssl = true;
-        sites[idx].sslType = 'standard';
-        sites[idx].sslExpiry = getSSLExpiry(cleanDomain);
-        saveSites(sites);
-      }
-
-      return { success: true, message: `SSL issued for ${cleanDomain}` };
     } catch (err) {
-      const dnsInfo = await checkDomainDNS(cleanDomain);
-      return reply.code(500).send({
-        error: 'SSL issuance failed.',
-        details: err.message,
-        dnsMismatch: !dnsInfo.matches,
-        serverIp: dnsInfo.serverIp,
-        resolvedIps: dnsInfo.resolvedIps,
-        dnsCheckerUrl: dnsInfo.dnsCheckerUrl,
+      certResult = { code: 1, stderr: err.message };
+    } finally {
+      // 4. Always restart OpenLiteSpeed
+      try {
+        await shell('systemctl start lsws 2>/dev/null || /usr/local/lsws/bin/lswsctrl start 2>/dev/null || true');
+      } catch {}
+    }
+
+    // 5. Fallback: if standalone failed (e.g. port blocked or container restriction), attempt webroot
+    if (certResult.code !== 0 && targetRoot && existsSync(targetRoot)) {
+      try {
+        const webrootResult = await run(config.bin.certbot, [
+          'certonly',
+          '--webroot',
+          '-w', targetRoot,
+          ...domains,
+          '--email', email || `admin@${cleanDomain}`,
+          '--agree-tos',
+          '--non-interactive',
+        ], { timeout: 120_000 });
+        if (webrootResult.code === 0) {
+          certResult = webrootResult;
+        }
+      } catch {}
+    }
+
+    if (certResult.code !== 0) {
+      const freshDns = await checkDomainDNS(cleanDomain);
+      return reply.code(400).send({
+        error: 'SSL certificate verification failed.',
+        details: certResult.stderr || certResult.stdout || 'Certbot standalone verification failed',
+        dnsMismatch: !freshDns.matches,
+        serverIp: freshDns.serverIp,
+        resolvedIps: freshDns.resolvedIps,
+        dnsCheckerUrl: freshDns.dnsCheckerUrl,
+        suggestion: !freshDns.matches
+          ? `Your domain "${cleanDomain}" does not appear to point to this server IP (${freshDns.serverIp || 'unknown'}). It currently resolves to [${freshDns.resolvedIps.join(', ') || 'nowhere'}]. Please check your DNS on https://dnschecker.org/#A/${cleanDomain}`
+          : `Domain resolves to server IP (${freshDns.serverIp}), but Let's Encrypt challenge verification failed. Ensure port 80 is not blocked by external cloud provider firewalls.`,
       });
     }
-  });
+
+    // 6. Update OLS vhost to inject vhssl block pointing to /etc/letsencrypt/live/<domain>/
+    updateVirtualHostSSL(cleanDomain, false);
+
+    // 7. Restart OLS to apply certificate
+    await shell('systemctl reload lsws 2>/dev/null || /usr/local/lsws/bin/lswsctrl restart 2>/dev/null || true');
+
+    // 8. Update site record
+    const sites = loadSites();
+    const idx = sites.findIndex((s) => s.domain === cleanDomain);
+    if (idx !== -1) {
+      sites[idx].ssl = true;
+      sites[idx].sslType = 'standard';
+      sites[idx].sslExpiry = getSSLExpiry(cleanDomain);
+      saveSites(sites);
+    }
+
+    return {
+      success: true,
+      message: `SSL certificate successfully installed and configured for ${cleanDomain}!`,
+      sslExpiry: getSSLExpiry(cleanDomain),
+    };
 
   // ─── Issue Wildcard SSL with Cloudflare DNS-01 ──────────
   app.post('/wildcard', async (request, reply) => {
