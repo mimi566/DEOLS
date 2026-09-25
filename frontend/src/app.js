@@ -4388,95 +4388,102 @@ async function setupWPFail2ban() {
 
 // ─── Make functions globally accessible ─────────────────────
 
-window.navigateTo = navigateTo;
-window.purgeAllCache = purgeAllCache;
-window.showNewSiteModal = showNewSiteModal;
-window.repairPerms = repairPerms;
-window.deleteSite = deleteSite;
-window.showNewDbModal = showNewDbModal;
-window.createDb = createDb;
-window.dropDb = dropDb;
-window.dropDbUser = dropDbUser;
-window.showNewDbUserModal = showNewDbUserModal;
-window.createDbUser = createDbUser;
-window.showChangeDbUserPassModal = showChangeDbUserPassModal;
-window.repairDatabase = repairDatabase;
-window.fixSiteDbConnection = fixSiteDbConnection;
-window.showIssueSSLModal = showIssueSSLModal;
-window.switchSSLTab = switchSSLTab;
-window.toggleCFAuthFields = toggleCFAuthFields;
-window.testCloudflareConnection = testCloudflareConnection;
-window.handleIssueSSLSubmit = handleIssueSSLSubmit;
-window.issueWildcardSSL = issueWildcardSSL;
-window.renderSSLErrorFallback = renderSSLErrorFallback;
-window.issueSSL = issueSSL;
-window.renewAllSSL = renewAllSSL;
-window.revokeSSL = revokeSSL;
-window.loadFileList = loadFileList;
-window.editFile = editFile;
-window.saveFile = saveFile;
-window.deleteFile = deleteFile;
-window.showUploadModal = showUploadModal;
-window.showNewFolderModal = showNewFolderModal;
-window.createFolder = createFolder;
-window.svcAction = svcAction;
-window.renderOLS = renderOLS;
-window.redisAction = redisAction;
-window.flushRedis = flushRedis;
-window.memcachedAction = memcachedAction;
-window.flushMemcached = flushMemcached;
-window.showNewCronModal = showNewCronModal;
-window.addCron = addCron;
-window.deleteCron = deleteCron;
-window.showNewSyncModal = showNewSyncModal;
-window.createSync = createSync;
-window.gitPull = gitPull;
-window.gitRemove = gitRemove;
-window.showAddKeyModal = showAddKeyModal;
-window.addSSHKey = addSSHKey;
-window.removeSSHKey = removeSSHKey;
-window.showNewPyServiceModal = showNewPyServiceModal;
-window.createPyService = createPyService;
-window.pyAction = pyAction;
-window.deletePyService = deletePyService;
-window.showAddRuleModal = showAddRuleModal;
-window.fwAddRule = fwAddRule;
-window.fwDeleteRule = fwDeleteRule;
-window.fwEnable = fwEnable;
-window.fwDisable = fwDisable;
-window.toggleAntiAttack = toggleAntiAttack;
-window.hardenServer = hardenServer;
-window.setupWPFail2ban = setupWPFail2ban;
-window.restartOLSHeader = restartOLSHeader;
-window.switchServicesTab = switchServicesTab;
-window.triggerDaemonReload = triggerDaemonReload;
-window.loadCustomServicesManager = loadCustomServicesManager;
-window.selectCustomService = selectCustomService;
-window.copyNanoCmd = copyNanoCmd;
-window.createNewCustomServiceUI = createNewCustomServiceUI;
-window.applyServiceTemplate = applyServiceTemplate;
-window.saveCustomService = saveCustomService;
-window.customServiceAction = customServiceAction;
-window.deleteCustomService = deleteCustomService;
-window.setCustomServiceInspection = setCustomServiceInspection;
-window.refreshInspectionPanel = refreshInspectionPanel;
-window.loadCoreServicesList = loadCoreServicesList;
-window.showTimezoneModal = showTimezoneModal;
-window.saveServerTimezone = saveServerTimezone;
-window.noticeRestartOLS = noticeRestartOLS;
-window.noticeReloadServer = noticeReloadServer;
-window.initServerClock = initServerClock;
-window.navigateTo = navigateTo;
-window.showModal = showModal;
-window.closeModal = closeModal;
-window.openSiteManage = openSiteManage;
-window.purgeAllCache = purgeAllCache;
-window.renderTerminal = renderTerminal;
-window.checkAuth = checkAuth;
-window.showLogin = showLogin;
-window.showSetup = showSetup;
-window.showDashboard = showDashboard;
-window.hideAll = hideAll;
+// ─── Global Window Bindings ─────────────────────────────────
+
+const _globalExports = {
+  navigateTo,
+  purgeAllCache,
+  showNewSiteModal,
+  repairPerms,
+  deleteSite,
+  showNewDbModal,
+  dropDb,
+  dropDbUser,
+  showNewDbUserModal,
+  createDbUser,
+  showChangeDbUserPassModal,
+  repairDatabase,
+  fixSiteDbConnection,
+  showIssueSSLModal,
+  switchSSLTab,
+  toggleCFAuthFields,
+  testCloudflareConnection,
+  handleIssueSSLSubmit,
+  issueWildcardSSL,
+  renderSSLErrorFallback,
+  issueSSL,
+  renewAllSSL,
+  revokeSSL,
+  loadFileList,
+  editFile,
+  saveFile,
+  deleteFile,
+  showUploadModal,
+  showNewFolderModal,
+  createFolder,
+  svcAction,
+  renderOLS,
+  redisAction,
+  flushRedis,
+  memcachedAction,
+  flushMemcached,
+  showNewCronModal,
+  addCron,
+  deleteCron,
+  showNewSyncModal,
+  createSync,
+  gitPull,
+  gitRemove,
+  showAddKeyModal,
+  addSSHKey,
+  removeSSHKey,
+  showNewPyServiceModal,
+  createPyService,
+  pyAction,
+  deletePyService,
+  showAddRuleModal,
+  fwAddRule,
+  fwDeleteRule,
+  fwEnable,
+  fwDisable,
+  toggleAntiAttack,
+  hardenServer,
+  setupWPFail2ban,
+  restartOLSHeader,
+  switchServicesTab,
+  triggerDaemonReload,
+  loadCustomServicesManager,
+  selectCustomService,
+  copyNanoCmd,
+  createNewCustomServiceUI,
+  applyServiceTemplate,
+  saveCustomService,
+  customServiceAction,
+  deleteCustomService,
+  setCustomServiceInspection,
+  refreshInspectionPanel,
+  loadCoreServicesList,
+  showTimezoneModal,
+  saveServerTimezone,
+  noticeRestartOLS,
+  noticeReloadServer,
+  initServerClock,
+  showModal,
+  closeModal,
+  openSiteManage,
+  renderTerminal,
+  checkAuth,
+  showLogin,
+  showSetup,
+  showDashboard,
+  hideAll,
+};
+
+for (const [key, val] of Object.entries(_globalExports)) {
+  if (typeof val !== 'undefined') {
+    window[key] = val;
+  }
+}
 
 // ─── Initialize ─────────────────────────────────────────────
 
