@@ -7,6 +7,12 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { shell, run } from '../utils/shell.js';
 import { config } from '../config.js';
+import {
+  parseOlsVirtualHosts,
+  parseOlsListeners,
+  syncAllVirtualHosts,
+  getVirtualHostConfig,
+} from '../utils/ols-config.js';
 
 export default async function olsRoutes(app) {
   // All OLS routes require panel authentication
@@ -189,4 +195,48 @@ export default async function olsRoutes(app) {
       method,
     };
   });
+
+  // ─── List OLS Virtual Hosts (from httpd_config.conf) ───
+  app.get('/vhosts', async () => {
+    return { vhosts: parseOlsVirtualHosts() };
+  });
+
+  // ─── List OLS Listeners (Port 80 & Port 443 Mappings) ───
+  app.get('/listeners', async () => {
+    return { listeners: parseOlsListeners() };
+  });
+
+  // ─── Get Raw VHost Configuration ───────────────────────
+  app.get('/vhost/:domain/config', async (request, reply) => {
+    const { domain } = request.params;
+    const vhostConf = getVirtualHostConfig(domain);
+    if (!vhostConf.vhconfContent && !vhostConf.httpdSnippet) {
+      return reply.code(404).send({ error: `Virtual Host configuration for ${domain} not found in OLS` });
+    }
+    return vhostConf;
+  });
+
+  // ─── Re-Sync All Sites with OLS (CyberPanel Structure) ──
+  app.post('/sync', async (request, reply) => {
+    try {
+      const result = syncAllVirtualHosts();
+      // Restart OLS to apply all synchronized configurations
+      const olsRoot = config.olsRoot || '/usr/local/lsws';
+      const lswsctrl = config.bin.lswsctrl || join(olsRoot, 'bin', 'lswsctrl');
+      if (existsSync(lswsctrl)) {
+        await shell(`"${lswsctrl}" restart 2>/dev/null || true`);
+      }
+      return {
+        success: true,
+        message: `Successfully synchronized ${result.syncedCount} site(s) with OLS WebAdmin virtual hosts and dual listeners`,
+        ...result,
+      };
+    } catch (err) {
+      return reply.code(500).send({
+        error: 'Failed to synchronize with OLS',
+        details: err.message,
+      });
+    }
+  });
 }
+

@@ -34,40 +34,35 @@
       </div>
     </div>
 
-    <!-- Setup Screen -->
+    <!-- Setup Screen (Root SSH Required) -->
     <div id="setup-screen" class="auth-screen" style="display:none">
-      <div class="auth-card">
+      <div class="auth-card" style="max-width: 520px;">
         <div class="auth-header">
           <svg class="auth-logo" viewBox="0 0 48 48" fill="none">
-            <path d="M26 4L8 28h14l-4 16 18-24H22l4-16z" fill="url(#bolt-grad2)" stroke="rgba(255,255,255,0.2)" stroke-width="1.5"/>
-            <defs><linearGradient id="bolt-grad2" x1="8" y1="4" x2="36" y2="44"><stop offset="0%" stop-color="#6366f1"/><stop offset="100%" stop-color="#a78bfa"/></linearGradient></defs>
+            <path d="M24 4L6 12v12c0 11.1 7.7 21.5 18 24 10.3-2.5 18-12.9 18-24V12L24 4zm0 22a4 4 0 110-8 4 4 0 010 8z" fill="url(#bolt-grad2)" stroke="rgba(255,255,255,0.2)" stroke-width="1.5"/>
+            <defs><linearGradient id="bolt-grad2" x1="6" y1="4" x2="42" y2="48"><stop offset="0%" stop-color="#6366f1"/><stop offset="100%" stop-color="#a78bfa"/></linearGradient></defs>
           </svg>
-          <h1>Welcome to DEOLS</h1>
-          <p>Create your admin account to get started</p>
+          <h1>Root SSH Setup Required</h1>
+          <p>Admin credentials must be generated from the server terminal</p>
         </div>
-        <form id="setup-form" class="auth-form">
-          <div class="form-group">
-            <label for="setup-username">Username</label>
-            <input type="text" id="setup-username" placeholder="admin" required autocomplete="username">
+        <div class="auth-form">
+          <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color, rgba(255,255,255,0.1)); border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+            <p style="font-size: 13px; color: var(--text-secondary, #94a3b8); margin-bottom: 12px; line-height: 1.5;">
+              For maximum security, <strong>DEOLS does not allow public web registration</strong>. Please connect to your Debian 12 server via SSH as root and run:
+            </p>
+            <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(0,0,0,0.4); border-radius: 6px; padding: 10px 14px; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #38bdf8;">
+              <span id="ssh-setup-cmd">deols admin reset</span>
+              <button type="button" id="copy-setup-cmd-btn" class="btn btn-sm" style="padding: 4px 8px; font-size: 11px;">Copy</button>
+            </div>
+            <p style="font-size: 12px; color: var(--text-muted, #64748b); margin-top: 12px; line-height: 1.4;">
+              This command will securely generate your initial administrator password using Argon2id and print your login credentials.
+            </p>
           </div>
-          <div class="form-group">
-            <label for="setup-email">Email</label>
-            <input type="email" id="setup-email" placeholder="admin@example.com">
-          </div>
-          <div class="form-group">
-            <label for="setup-password">Password</label>
-            <input type="password" id="setup-password" placeholder="••••••••••••" required minlength="8" autocomplete="new-password">
-          </div>
-          <div class="form-group">
-            <label for="setup-password2">Confirm Password</label>
-            <input type="password" id="setup-password2" placeholder="••••••••••••" required minlength="8" autocomplete="new-password">
-          </div>
-          <button type="submit" class="btn btn-primary btn-full" id="setup-btn">
-            <span>Create Account & Enter Panel</span>
+          <button type="button" class="btn btn-primary btn-full" id="setup-check-btn">
+            <span>I Have Generated Credentials — Proceed to Login</span>
             <svg viewBox="0 0 20 20" fill="currentColor" class="btn-icon"><path fill-rule="evenodd" d="M10.293 5.293a1 1 0 011.414 0l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414-1.414L12.586 11H5a1 1 0 110-2h7.586l-2.293-2.293a1 1 0 010-1.414z"/></svg>
           </button>
-          <p id="setup-error" class="form-error"></p>
-        </form>
+        </div>
       </div>
     </div>
 
@@ -152,6 +147,10 @@
               <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z"/></svg>
               <span>Services</span>
             </a>
+            <a href="#" class="nav-item" data-page="ols" id="nav-ols">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 2a1 1 0 011 1v1.323l3.954 1.582 1.599-.8a1 1 0 011.366.366l1 1.732a1 1 0 01-.366 1.366l-1.6 1.2a8.04 8.04 0 010 2.464l1.6 1.2a1 1 0 01.366 1.366l-1 1.732a1 1 0 01-1.366.366l-1.599-.8L11 15.677V17a1 1 0 01-2 0v-1.323l-3.954-1.582-1.599.8a1 1 0 01-1.366-.366l-1-1.732a1 1 0 01.366-1.366l1.6-1.2a8.04 8.04 0 010-2.464l-1.6-1.2a1 1 0 01-.366-1.366l1-1.732a1 1 0 011.366-.366l1.599.8L9 4.323V3a1 1 0 011-1zm0 5a3 3 0 100 6 3 3 0 000-6z"/></svg>
+              <span>OLS WebAdmin</span>
+            </a>
             <a href="#" class="nav-item" data-page="cache" id="nav-cache">
               <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z"/></svg>
               <span>Cache</span>
@@ -230,10 +229,25 @@
                 <span class="stat-value" id="ram-value">—%</span>
               </div>
             </div>
+            <!-- Timezone Header Display & Quick Switcher -->
+            <button class="header-tz-btn" id="header-tz-btn" title="Click to view and change server timezone">
+              <svg class="header-tz-icon" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z"/>
+              </svg>
+              <span id="header-server-time">--:--</span>
+              <span class="header-tz-badge" id="header-tz-badge">UTC</span>
+            </button>
             <div class="anti-attack-indicator" id="anti-attack-badge" style="display:none">
               <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M2.166 4.999A11.954 11.954 0 0010 1.944 11.954 11.954 0 0017.834 5c.11.65.166 1.32.166 2.001 0 5.225-3.34 9.67-8 11.317C5.34 16.67 2 12.225 2 7c0-.682.057-1.35.166-2.001zm11.541 3.708a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"/></svg>
               <span>SHIELD ACTIVE</span>
             </div>
+            <!-- OLS Server Restart Button (Header Right) -->
+            <button class="header-ols-restart-btn" id="header-ols-restart-btn" title="Gracefully restart OpenLiteSpeed server (zero downtime)">
+              <svg class="header-ols-icon" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z"/>
+              </svg>
+              <span class="header-ols-text">Restart OLS</span>
+            </button>
           </div>
         </header>
 

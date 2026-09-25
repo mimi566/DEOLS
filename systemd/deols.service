@@ -1,6 +1,6 @@
 [Unit]
 Description=DEOLS - Debian OpenLiteSpeed Management Panel
-Documentation=https://github.com/deols/deols
+Documentation=https://github.com/mimi566/DEOLS
 After=network-online.target mariadb.service lsws.service
 Wants=network-online.target
 

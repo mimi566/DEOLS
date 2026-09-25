@@ -4,7 +4,7 @@
 // Usage: deols <command> [options]
 // ─────────────────────────────────────────────────────────────
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { randomBytes } from 'crypto';
@@ -188,6 +188,22 @@ function handleOLSPassword(customPassword = null) {
   }
 }
 
+async function handleOLSSync() {
+  ensureRoot();
+  console.log('\n\x1b[36mSynchronizing DEOLS websites with OpenLiteSpeed Virtual Hosts & Dual Listeners...\x1b[0m');
+  try {
+    const olsConfigMod = await import(`file://${join(ROOT_DIR, 'backend', 'utils', 'ols-config.js').replace(/\\/g, '/')}`);
+    const result = olsConfigMod.syncAllVirtualHosts();
+    const lswsctrl = join(config.olsRoot || '/usr/local/lsws', 'bin', 'lswsctrl');
+    if (existsSync(lswsctrl)) {
+      execSync(`${lswsctrl} restart >/dev/null 2>&1 || true`);
+    }
+    console.log(`\x1b[32m✓ Successfully synchronized ${result.syncedCount} site(s) with OLS WebAdmin virtual hosts and dual listeners (Port 80 & Port 443).\x1b[0m\n`);
+  } catch (err) {
+    console.error(`\x1b[31m[ERROR] Failed to synchronize with OLS: ${err.message}\x1b[0m\n`);
+  }
+}
+
 function handleRestart() {
   ensureRoot();
   console.log('\x1b[36mRestarting DEOLS panel daemon...\x1b[0m');
@@ -240,6 +256,113 @@ function handleInfo() {
   console.log('\x1b[36m\x1b[1m════════════════════════════════════════════════════════════\x1b[0m\n');
 }
 
+async function handleCronCLI(subcmd, args) {
+  try {
+    const autoMod = await import(`file://${join(ROOT_DIR, 'backend', 'services', 'automation.js').replace(/\\/g, '/')}`);
+
+    if (subcmd === 'list' || !subcmd) {
+      const tasks = autoMod.loadTasks();
+      console.log('\n\x1b[36m\x1b[1mDEOLS Server-Side Automation Tasks:\x1b[0m');
+      console.log('────────────────────────────────────────────────────────────────────────');
+      for (const t of tasks) {
+        const statusColor = t.lastStatus === 'success' ? '\x1b[32m' : (t.lastStatus === 'failed' ? '\x1b[31m' : '\x1b[33m');
+        console.log(`  \x1b[1m${t.id.padEnd(16)}\x1b[0m \x1b[35m[${t.schedule}]\x1b[0m ${t.name}`);
+        console.log(`    Status: ${statusColor}${t.lastStatus || 'idle'}\x1b[0m | Enabled: ${t.enabled ? 'Yes' : 'No'} | Last Run: ${t.lastRun ? new Date(t.lastRun).toLocaleString() : 'Never'}`);
+      }
+      console.log('────────────────────────────────────────────────────────────────────────\n');
+    } else if (subcmd === 'run') {
+      const taskId = args[0] || 'sys-wp-cron';
+      console.log(`\n\x1b[36mExecuting automation task [${taskId}]...\x1b[0m`);
+      const res = await autoMod.runTaskNow(taskId);
+      console.log(`Status: ${res.status === 'success' ? '\x1b[32mSUCCESS\x1b[0m' : '\x1b[31mFAILED\x1b[0m'} (Duration: ${res.durationMs}ms)`);
+      if (res.output) {
+        console.log('\nOutput:\n' + res.output);
+      }
+      console.log();
+    } else if (subcmd === 'run-wp') {
+      console.log('\n\x1b[36mRunning Global WordPress WP-Cron across all hosted sites...\x1b[0m');
+      const res = await autoMod.runTaskNow('sys-wp-cron');
+      console.log(`Status: ${res.status === 'success' ? '\x1b[32mSUCCESS\x1b[0m' : '\x1b[31mFAILED\x1b[0m'} (Duration: ${res.durationMs}ms)`);
+      if (res.output) console.log(res.output);
+      console.log();
+    } else if (subcmd === 'logs') {
+      const taskId = args[0];
+      if (!taskId) {
+        console.error('\x1b[31m[ERROR] Please specify task ID (e.g. deols cron logs sys-wp-cron)\x1b[0m');
+        process.exit(1);
+      }
+      const logs = autoMod.getTaskLogs(taskId);
+      console.log(`\n\x1b[36mLogs for [${taskId}]:\x1b[0m\n${logs}\n`);
+    } else {
+      console.log('\x1b[31mUnknown cron command. Available: list, run <id>, run-wp, logs <id>\x1b[0m');
+    }
+  } catch (err) {
+    console.error(`\x1b[31m[ERROR] Failed to run cron CLI: ${err.message}\x1b[0m`);
+  }
+}
+
+function handleServiceCLI(subcmd, args) {
+  if (subcmd === 'daemon-reload' || subcmd === 'reload') {
+    try {
+      execSync('systemctl daemon-reload', { stdio: 'inherit' });
+      console.log('\x1b[32m✓ systemd daemon reloaded successfully.\x1b[0m');
+    } catch (err) {
+      console.error('\x1b[31mFailed to execute systemctl daemon-reload.\x1b[0m', err.message);
+    }
+  } else if (subcmd === 'restart') {
+    const svc = args[0];
+    if (!svc) {
+      console.error('\x1b[31mUsage: deols service restart <service-name>\x1b[0m');
+      process.exit(1);
+    }
+    const clean = svc.endsWith('.service') ? svc : `${svc}.service`;
+    try {
+      execSync(`systemctl restart ${clean}`, { stdio: 'inherit' });
+      console.log(`\x1b[32m✓ Service ${clean} restarted.\x1b[0m`);
+    } catch (err) {
+      console.error(`\x1b[31mFailed to restart ${clean}.\x1b[0m`);
+    }
+  } else if (subcmd === 'status') {
+    const svc = args[0];
+    if (!svc) {
+      console.error('\x1b[31mUsage: deols service status <service-name>\x1b[0m');
+      process.exit(1);
+    }
+    const clean = svc.endsWith('.service') ? svc : `${svc}.service`;
+    try {
+      execSync(`systemctl status ${clean} --no-pager`, { stdio: 'inherit' });
+    } catch {
+      // systemctl status exits non-zero if inactive
+    }
+  } else if (subcmd === 'list' || subcmd === 'custom') {
+    const dir = config.systemdDir || (process.platform === 'linux' ? '/etc/systemd/system' : join(config.dataDir, 'systemd'));
+    console.log(`\n\x1b[36m\x1b[1m─── Custom Systemd Services (${dir}) ───\x1b[0m`);
+    try {
+      if (!existsSync(dir)) {
+        console.log('  Directory does not exist yet.');
+      } else {
+        const files = readdirSync(dir).filter(f => f.endsWith('.service') && !f.includes('@'));
+        if (files.length === 0) {
+          console.log('  No custom services found.');
+        } else {
+          for (const f of files) {
+            let active = 'unknown';
+            try {
+              active = execSync(`systemctl is-active ${f} 2>/dev/null`, { encoding: 'utf-8' }).trim();
+            } catch {}
+            console.log(`  ${active === 'active' ? '\x1b[32m●\x1b[0m' : '\x1b[31m○\x1b[0m'} ${f.padEnd(32)} [${active}] (nano ${join(dir, f)})`);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to list services:', err.message);
+    }
+    console.log();
+  } else {
+    console.log('\x1b[31mUnknown service command. Available: daemon-reload, restart <name>, status <name>, list\x1b[0m');
+  }
+}
+
 function showHelp() {
   console.log(`
 \x1b[1mDEOLS CLI — Debian OpenLiteSpeed Management Tool\x1b[0m
@@ -253,9 +376,22 @@ function showHelp() {
   \x1b[32mdeols admin show\x1b[0m                    Show list of configured administrators
 
 \x1b[36mOPENLITESPEED (OLS) COMMANDS:\x1b[0m
+  \x1b[32mdeols ols sync\x1b[0m                      Synchronize all sites with OLS Virtual Hosts & dual listeners
   \x1b[32mdeols ols reset-pass\x1b[0m                Generate a new random password for OLS WebAdmin (port 7080)
   \x1b[32mdeols ols password <password>\x1b[0m       Set a custom password for OLS WebAdmin
   \x1b[32mdeols ols restart\x1b[0m                   Gracefully restart OpenLiteSpeed server
+
+\x1b[36mCRON & SERVER-SIDE AUTOMATION COMMANDS:\x1b[0m
+  \x1b[32mdeols cron list\x1b[0m                     List all automated background tasks and their statuses
+  \x1b[32mdeols cron run <task-id>\x1b[0m            Execute an automation task immediately (e.g. sys-wp-cron)
+  \x1b[32mdeols cron run-wp\x1b[0m                   Run global WP-Cron across all hosted WordPress sites
+  \x1b[32mdeols cron logs <task-id>\x1b[0m           View execution log history for an automation task
+
+\x1b[36mSYSTEMD & CUSTOM SERVICE COMMANDS:\x1b[0m
+  \x1b[32mdeols service daemon-reload\x1b[0m         Reload systemd manager configuration (systemctl daemon-reload)
+  \x1b[32mdeols service restart <name>\x1b[0m        Restart a systemd service (e.g. automation-custom-service.service)
+  \x1b[32mdeols service status <name>\x1b[0m         Inspect real-time systemctl status for a service
+  \x1b[32mdeols service list\x1b[0m                  List all custom systemd units in /etc/systemd/system
 
 \x1b[36mSERVICE & SYSTEM COMMANDS:\x1b[0m
   \x1b[32mdeols status\x1b[0m                        Display status of DEOLS, OLS, and MariaDB services
@@ -297,6 +433,8 @@ switch (cmd) {
         process.exit(1);
       }
       handleOLSPassword(pass);
+    } else if (subcmd === 'sync') {
+      await handleOLSSync();
     } else if (subcmd === 'restart') {
       try {
         execSync(`${join(config.olsRoot || '/usr/local/lsws', 'bin', 'lswsctrl')} restart`, { stdio: 'inherit' });
@@ -305,8 +443,18 @@ switch (cmd) {
         console.error('\x1b[31mFailed to restart OpenLiteSpeed.\x1b[0m');
       }
     } else {
-      console.log('\x1b[31mUnknown ols command. Available: reset-pass, password <password>, restart\x1b[0m');
+      console.log('\x1b[31mUnknown ols command. Available: sync, reset-pass, password <password>, restart\x1b[0m');
     }
+    break;
+
+  case 'cron':
+  case 'automation':
+    await handleCronCLI(subcmd, args);
+    break;
+
+  case 'service':
+  case 'services':
+    handleServiceCLI(subcmd, args);
     break;
 
   case 'restart':

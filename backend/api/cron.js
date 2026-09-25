@@ -3,6 +3,14 @@
 // ─────────────────────────────────────────────────────────────
 
 import { shell } from '../utils/shell.js';
+import {
+  loadTasks,
+  runTaskNow,
+  addCustomTask,
+  deleteCustomTask,
+  toggleTask,
+  getTaskLogs,
+} from '../services/automation.js';
 
 export default async function cronRoutes(app) {
   app.addHook('preHandler', app.authenticate);
@@ -145,4 +153,65 @@ export default async function cronRoutes(app) {
 
     return { success: true, message: `WP-Cron set for ${domain} every ${interval} minutes` };
   });
+
+  // ─── List Server-Side Automation Tasks ─────────────────
+  app.get('/automation', async () => {
+    const tasks = loadTasks();
+    return {
+      success: true,
+      serviceActive: true,
+      tasks,
+    };
+  });
+
+  // ─── Add Custom Server-Side Automation Task ─────────────
+  app.post('/automation', async (request, reply) => {
+    try {
+      const task = addCustomTask(request.body || {});
+      return { success: true, task };
+    } catch (err) {
+      return reply.code(400).send({ error: err.message });
+    }
+  });
+
+  // ─── Run Automation Task Immediately (Manual Trigger) ───
+  app.post('/automation/:id/run', async (request, reply) => {
+    const { id } = request.params;
+    try {
+      const result = await runTaskNow(id);
+      return { success: true, result };
+    } catch (err) {
+      return reply.code(500).send({ error: err.message });
+    }
+  });
+
+  // ─── Delete Custom Automation Task ──────────────────────
+  app.delete('/automation/:id', async (request, reply) => {
+    const { id } = request.params;
+    try {
+      deleteCustomTask(id);
+      return { success: true, message: `Task ${id} removed` };
+    } catch (err) {
+      return reply.code(400).send({ error: err.message });
+    }
+  });
+
+  // ─── Toggle Automation Task (Enable / Disable) ──────────
+  app.put('/automation/:id/toggle', async (request, reply) => {
+    const { id } = request.params;
+    try {
+      const task = toggleTask(id);
+      return { success: true, task };
+    } catch (err) {
+      return reply.code(404).send({ error: err.message });
+    }
+  });
+
+  // ─── Get Automation Task Execution Logs ─────────────────
+  app.get('/automation/:id/logs', async (request, reply) => {
+    const { id } = request.params;
+    const logs = getTaskLogs(id);
+    return { id, logs };
+  });
 }
+

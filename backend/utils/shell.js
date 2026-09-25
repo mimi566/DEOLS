@@ -5,6 +5,7 @@
 
 import { exec, execFile, spawn } from 'child_process';
 import { promisify } from 'util';
+import { randomBytes } from 'crypto';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -96,7 +97,6 @@ export function spawnProcess(binary, args = [], opts = {}) {
 export function generatePassword(length = 24) {
   const chars =
     'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%&*';
-  const { randomBytes } = await import('crypto');
   const bytes = randomBytes(length);
   let password = '';
   for (let i = 0; i < length; i++) {

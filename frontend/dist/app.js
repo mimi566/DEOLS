@@ -117,6 +117,7 @@ function navigateTo(page) {
     ssl: 'SSL / TLS',
     files: 'File Manager',
     services: 'Services',
+    ols: 'OpenLiteSpeed & WebAdmin',
     cache: 'Cache Control',
     cron: 'Cron Jobs',
     terminal: 'Terminal',
@@ -141,6 +142,7 @@ function navigateTo(page) {
     ssl: renderSSL,
     files: renderFiles,
     services: renderServices,
+    ols: renderOLS,
     cache: renderCache,
     cron: renderCron,
     terminal: renderTerminal,
@@ -213,6 +215,7 @@ function showDashboard() {
   }
   navigateTo('dashboard');
   startStatsPolling();
+  initServerClock();
 }
 
 function hideAll() {
@@ -222,33 +225,22 @@ function hideAll() {
   document.getElementById('dashboard').style.display = 'none';
 }
 
-// Setup form
-document.getElementById('setup-form')?.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const errEl = document.getElementById('setup-error');
-  errEl.textContent = '';
-
-  const username = document.getElementById('setup-username').value;
-  const email = document.getElementById('setup-email').value;
-  const password = document.getElementById('setup-password').value;
-  const password2 = document.getElementById('setup-password2').value;
-
-  if (password !== password2) {
-    errEl.textContent = 'Passwords do not match';
-    return;
+// Setup screen (Root SSH Required)
+document.getElementById('copy-setup-cmd-btn')?.addEventListener('click', () => {
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText('deols admin reset');
   }
+  toast('Copied to clipboard: deols admin reset', 'success');
+});
 
-  const result = await api('/auth/setup', { method: 'POST', body: { username, email, password } });
-  if (result?.success) {
-    if (result.token) {
-      state.token = result.token;
-      localStorage.setItem('deols_token', result.token);
-    }
-    state.user = result.user;
-    toast('Panel initialized successfully!', 'success');
-    showDashboard();
+document.getElementById('setup-check-btn')?.addEventListener('click', async () => {
+  const status = await api('/auth/status');
+  if (status?.initialized) {
+    toast('Admin account detected! Please sign in.', 'success');
+    showLogin();
   } else {
-    errEl.textContent = result?.error || 'Setup failed';
+    toast('Admin account not yet initialized. Run "deols admin reset" via root SSH first.', 'warning');
+    showLogin();
   }
 });
 
@@ -283,6 +275,291 @@ document.getElementById('logout-btn')?.addEventListener('click', async () => {
   showLogin();
   toast('Logged out', 'info');
 });
+
+// ─── Header OLS Server Restart ──────────────────────────────
+
+async function restartOLSHeader() {
+  const btn = document.getElementById('header-ols-restart-btn');
+  if (!btn || btn.disabled) return;
+
+  btn.disabled = true;
+  btn.classList.add('restarting');
+  const textSpan = btn.querySelector('.header-ols-text');
+  const originalText = textSpan ? textSpan.textContent : 'Restart OLS';
+  if (textSpan) textSpan.textContent = 'Restarting…';
+
+  toast('Sending graceful restart signal to OpenLiteSpeed…', 'info', 3500);
+
+  try {
+    const res = await api('/ols/restart', { method: 'POST' });
+    if (res?.success) {
+      toast(res.message || 'OpenLiteSpeed gracefully restarted (zero downtime)', 'success', 5000);
+      if (state.currentPage === 'ols' || state.currentPage === 'dashboard') {
+        navigateTo(state.currentPage);
+      }
+    } else {
+      toast(res?.error || 'Failed to restart OpenLiteSpeed', 'error', 6000);
+    }
+  } catch (err) {
+    toast(`Restart error: ${err.message}`, 'error', 6000);
+  } finally {
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.classList.remove('restarting');
+      if (textSpan) textSpan.textContent = originalText;
+    }, 1200);
+  }
+}
+
+document.getElementById('header-ols-restart-btn')?.addEventListener('click', (e) => {
+  e.preventDefault();
+  restartOLSHeader();
+});
+
+// ─── Server Timezone & Live Header Clock ────────────────────
+
+let serverTimezone = 'UTC';
+let serverTimeOffsetMs = 0;
+let clockInterval = null;
+
+async function initServerClock() {
+  try {
+    const data = await api('/system/timezone');
+    if (data?.timezone) {
+      serverTimezone = data.timezone;
+      if (data.timestamp) {
+        serverTimeOffsetMs = data.timestamp - Date.now();
+      }
+      const badge = document.getElementById('header-tz-badge');
+      if (badge) {
+        const shortName = serverTimezone.split('/').pop().replace(/_/g, ' ');
+        badge.textContent = shortName;
+      }
+      const btn = document.getElementById('header-tz-btn');
+      if (btn) {
+        btn.title = `Server Timezone: ${serverTimezone} (Click to change)`;
+      }
+    }
+  } catch {}
+
+  updateHeaderClock();
+  if (!clockInterval) {
+    clockInterval = setInterval(updateHeaderClock, 1000);
+  }
+}
+
+function updateHeaderClock() {
+  const clockEl = document.getElementById('header-server-time');
+  if (!clockEl) return;
+  const now = new Date(Date.now() + serverTimeOffsetMs);
+  try {
+    const timeStr = new Intl.DateTimeFormat('en-US', {
+      timeZone: serverTimezone,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).format(now);
+    clockEl.textContent = timeStr;
+  } catch {
+    clockEl.textContent = now.toTimeString().split(' ')[0];
+  }
+}
+
+document.getElementById('header-tz-btn')?.addEventListener('click', (e) => {
+  e.preventDefault();
+  showTimezoneModal();
+});
+
+const COMMON_TIMEZONES = [
+  { value: 'UTC', label: 'UTC (Coordinated Universal Time)' },
+  { value: 'Asia/Kolkata', label: 'Asia/Kolkata (IST +05:30)' },
+  { value: 'America/New_York', label: 'America/New_York (US Eastern)' },
+  { value: 'America/Chicago', label: 'America/Chicago (US Central)' },
+  { value: 'America/Denver', label: 'America/Denver (US Mountain)' },
+  { value: 'America/Los_Angeles', label: 'America/Los_Angeles (US Pacific)' },
+  { value: 'Europe/London', label: 'Europe/London (GMT/BST)' },
+  { value: 'Europe/Paris', label: 'Europe/Paris (CET/CEST)' },
+  { value: 'Europe/Berlin', label: 'Europe/Berlin (CET/CEST)' },
+  { value: 'Asia/Dubai', label: 'Asia/Dubai (GST +04:00)' },
+  { value: 'Asia/Singapore', label: 'Asia/Singapore (SGT +08:00)' },
+  { value: 'Asia/Tokyo', label: 'Asia/Tokyo (JST +09:00)' },
+  { value: 'Australia/Sydney', label: 'Australia/Sydney (AEST/AEDT)' },
+  { value: 'Africa/Cairo', label: 'Africa/Cairo (EET +02:00)' },
+  { value: 'America/Sao_Paulo', label: 'America/Sao_Paulo (BRT -03:00)' },
+  { value: 'Asia/Hong_Kong', label: 'Asia/Hong_Kong (HKT +08:00)' },
+  { value: 'Asia/Bangkok', label: 'Asia/Bangkok (ICT +07:00)' },
+  { value: 'Europe/Amsterdam', label: 'Europe/Amsterdam (CET/CEST)' },
+  { value: 'Pacific/Auckland', label: 'Pacific/Auckland (NZST +12:00)' },
+];
+
+function showTimezoneModal() {
+  const modal = document.getElementById('modal');
+  const title = document.getElementById('modal-title');
+  const body = modal.querySelector('.modal-body') || modal;
+
+  title.textContent = 'Server Timezone Configuration';
+
+  const now = new Date(Date.now() + serverTimeOffsetMs);
+  let formattedTime = '';
+  try {
+    formattedTime = new Intl.DateTimeFormat('en-US', {
+      timeZone: serverTimezone,
+      dateStyle: 'full',
+      timeStyle: 'long',
+    }).format(now);
+  } catch {
+    formattedTime = now.toString();
+  }
+
+  const optionsHtml = COMMON_TIMEZONES.map(tz => `
+    <option value="${tz.value}" ${tz.value === serverTimezone ? 'selected' : ''}>${tz.label}</option>
+  `).join('');
+
+  body.innerHTML = `
+    <div id="tz-modal-content">
+      <div class="form-group mb-4">
+        <label class="form-label">Current Server Clock</label>
+        <div style="font-family: var(--font-mono); font-size: 0.95rem; color: #38bdf8; background: var(--bg-tertiary); padding: 10px 14px; border-radius: var(--radius-md); border: 1px solid var(--border-secondary);" id="modal-tz-clock">
+          ${escapeHTML(formattedTime)}
+        </div>
+      </div>
+
+      <div class="form-group mb-4">
+        <label class="form-label" for="tz-select">Select Server Timezone (IANA)</label>
+        <select id="tz-select" class="input" style="font-family: var(--font-mono); font-size: 0.85rem; padding: 8px 12px;">
+          ${optionsHtml}
+        </select>
+        <span class="form-hint" style="font-size: 11px; color: var(--text-tertiary); margin-top: 6px; display: block;">
+          Applied to the Linux operating system via <code>timedatectl set-timezone</code>. Affects cron jobs, server-side WP-Cron, and access log timestamps.
+        </span>
+      </div>
+
+      <div class="flex justify-between items-center mt-6">
+        <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+        <button type="button" class="btn btn-primary" id="save-tz-btn" onclick="saveServerTimezone()">
+          Set Server Timezone
+        </button>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('modal-overlay').style.display = 'flex';
+}
+
+async function saveServerTimezone() {
+  const select = document.getElementById('tz-select');
+  const btn = document.getElementById('save-tz-btn');
+  if (!select) return;
+
+  const timezone = select.value;
+  if (btn) btn.disabled = true;
+
+  toast(`Applying server timezone: ${timezone}…`, 'info', 4000);
+
+  try {
+    const res = await api('/system/timezone', {
+      method: 'POST',
+      body: { timezone },
+    });
+
+    if (res?.success) {
+      serverTimezone = res.timezone || timezone;
+      toast(`Server timezone changed to ${serverTimezone}!`, 'success', 5000);
+
+      // Update header badge and title immediately
+      const badge = document.getElementById('header-tz-badge');
+      if (badge) {
+        badge.textContent = serverTimezone.split('/').pop().replace(/_/g, ' ');
+      }
+      const headerBtn = document.getElementById('header-tz-btn');
+      if (headerBtn) {
+        headerBtn.title = `Server Timezone: ${serverTimezone} (Click to change)`;
+      }
+      updateHeaderClock();
+
+      // Show the post-change prompt modal with OLS restart and Server Reload buttons!
+      const content = document.getElementById('tz-modal-content');
+      if (content) {
+        content.innerHTML = `
+          <div style="text-align: center; padding: 12px 6px;">
+            <div style="width: 48px; height: 48px; border-radius: 50%; background: rgba(16, 185, 129, 0.15); color: var(--success); display: flex; align-items: center; justify-content: center; margin: 0 auto 16px;">
+              <svg viewBox="0 0 20 20" fill="currentColor" style="width: 24px; height: 24px;"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"/></svg>
+            </div>
+            <h3 style="font-size: 1.15rem; font-weight: 700; margin-bottom: 6px;">Timezone Updated: <span style="color: #38bdf8;">${escapeHTML(serverTimezone)}</span></h3>
+            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 22px; max-width: 440px; margin-left: auto; margin-right: auto; line-height: 1.5;">
+              To ensure that OpenLiteSpeed web engine, WordPress WP-Cron, access log stamps, and background worker services synchronize with the new timezone, please reload the panel daemon and restart OpenLiteSpeed now:
+            </p>
+
+            <div style="display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;">
+              <button class="btn btn-warning" id="notice-restart-ols-btn" onclick="noticeRestartOLS(this)">
+                <svg viewBox="0 0 20 20" fill="currentColor" class="btn-icon"><path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z"/></svg>
+                Restart OpenLiteSpeed (OLS)
+              </button>
+              <button class="btn btn-primary" id="notice-reload-server-btn" onclick="noticeReloadServer(this)">
+                <svg viewBox="0 0 20 20" fill="currentColor" class="btn-icon"><path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z"/></svg>
+                Reload Server Daemon
+              </button>
+            </div>
+
+            <div class="mt-4">
+              <button class="btn btn-sm btn-secondary" onclick="closeModal()">Dismiss</button>
+            </div>
+          </div>
+        `;
+      }
+
+      // Add attention pulse to the header OLS restart button
+      const olsBtn = document.getElementById('header-ols-restart-btn');
+      if (olsBtn) {
+        olsBtn.classList.add('pulsing-attention');
+        setTimeout(() => olsBtn.classList.remove('pulsing-attention'), 15000);
+      }
+    } else {
+      toast(res?.error || 'Failed to update server timezone', 'error', 6000);
+      if (btn) btn.disabled = false;
+    }
+  } catch (err) {
+    toast(`Timezone error: ${err.message}`, 'error', 6000);
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function noticeRestartOLS(btn) {
+  if (btn) btn.disabled = true;
+  toast('Sending graceful restart signal to OpenLiteSpeed…', 'info', 3000);
+  try {
+    const res = await api('/ols/restart', { method: 'POST' });
+    if (res?.success) {
+      toast('OpenLiteSpeed restarted successfully (zero downtime)!', 'success', 5000);
+      if (btn) btn.innerHTML = '✓ OLS Restarted';
+    } else {
+      toast(res?.error || 'Failed to restart OLS', 'error');
+      if (btn) btn.disabled = false;
+    }
+  } catch (err) {
+    toast(`Error: ${err.message}`, 'error');
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function noticeReloadServer(btn) {
+  if (btn) btn.disabled = true;
+  toast('Dispatching server daemon reload…', 'info', 3000);
+  try {
+    const res = await api('/system/reload', { method: 'POST' });
+    if (res?.success) {
+      toast('DEOLS server daemon reload signal dispatched!', 'success', 5000);
+      if (btn) btn.innerHTML = '✓ Server Reloaded';
+    } else {
+      toast(res?.error || 'Failed to reload server daemon', 'error');
+      if (btn) btn.disabled = false;
+    }
+  } catch (err) {
+    toast(`Error: ${err.message}`, 'error');
+    if (btn) btn.disabled = false;
+  }
+}
 
 // ─── Stats Polling ──────────────────────────────────────────
 
@@ -713,9 +990,13 @@ async function dropDbUser(user, host) {
 async function renderSSL(container) {
   container.innerHTML = `
     <div class="flex justify-between items-center mb-6">
-      <p class="text-muted">Manage Let's Encrypt SSL certificates</p>
+      <p class="text-muted">Manage Let's Encrypt SSL certificates (Standard & Cloudflare Wildcard)</p>
       <div class="flex gap-3">
-        <button class="btn btn-primary" onclick="showIssueSSLModal()">Issue SSL</button>
+        <a href="https://dnschecker.org/" target="_blank" rel="noopener noreferrer" class="btn btn-secondary flex items-center gap-1" style="text-decoration:none; font-size: 13px;" title="Check global DNS propagation">
+          <svg viewBox="0 0 20 20" fill="currentColor" style="width:14px;height:14px;"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM4.332 8.027a6.012 6.012 0 011.912-2.706C6.512 5.73 6.974 6 7.5 6A1.5 1.5 0 019 7.5V8a2 2 0 004 0 2 2 0 011.523-1.943A5.977 5.977 0 0116 10c0 .34-.028.675-.083 1H15a2 2 0 00-2 2v2.197A5.973 5.973 0 0110 16v-.2a2 2 0 00-1.664-1.973l-.403-.067A2 2 0 016 11.8v-.8a2 2 0 00-.916-1.688l-.752-.485z"/></svg>
+          <span>DNSChecker.org</span>
+        </a>
+        <button class="btn btn-primary" onclick="showIssueSSLModal()">+ Issue SSL</button>
         <button class="btn btn-secondary" onclick="renewAllSSL()">Renew All</button>
       </div>
     </div>
@@ -747,9 +1028,60 @@ async function renderSSL(container) {
   }
 }
 
+let currentSSLTab = 'wildcard';
+
 function showIssueSSLModal() {
+  currentSSLTab = 'wildcard';
   showModal('Issue SSL Certificate', `
-    <div class="flex flex-col gap-4">
+    <div class="tabs mb-4 flex gap-2" style="border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.1)); padding-bottom: 8px;">
+      <button class="btn btn-sm btn-primary" id="ssl-tab-wildcard-btn" onclick="switchSSLTab('wildcard')">Wildcard SSL (Cloudflare DNS)</button>
+      <button class="btn btn-sm btn-secondary" id="ssl-tab-standard-btn" onclick="switchSSLTab('standard')">Standard SSL (HTTP-01)</button>
+    </div>
+
+    <!-- Wildcard SSL Form -->
+    <div id="ssl-wildcard-panel" class="flex flex-col gap-4">
+      <div class="form-group">
+        <label>Base Domain</label>
+        <input type="text" id="ssl-wildcard-domain" placeholder="example.com" required>
+        <span class="text-xs text-muted" style="margin-top: 4px; display: block;">Certificate covers both <code>example.com</code> and <code>*.example.com</code></span>
+      </div>
+
+      <div class="form-group">
+        <label>Let's Encrypt Email</label>
+        <input type="email" id="ssl-wildcard-email" placeholder="admin@example.com">
+      </div>
+
+      <div class="form-group">
+        <label>Cloudflare Authentication Method</label>
+        <select id="ssl-cf-auth-type" onchange="toggleCFAuthFields()" style="width:100%; padding: 8px; border-radius: 6px; background: rgba(0,0,0,0.3); color: inherit; border: 1px solid var(--border-color, rgba(255,255,255,0.15));">
+          <option value="global">Cloudflare Account Email + Global API Key</option>
+          <option value="token">Cloudflare Scoped API Token (Bearer)</option>
+        </select>
+      </div>
+
+      <div class="form-group" id="cf-email-group">
+        <label>Cloudflare Account Email</label>
+        <input type="email" id="ssl-cf-email" placeholder="user@example.com">
+      </div>
+
+      <div class="form-group">
+        <label id="cf-key-label">Cloudflare Global API Key</label>
+        <input type="password" id="ssl-cf-key" placeholder="••••••••••••••••••••••••" required autocomplete="off">
+        <span class="text-xs text-muted" id="cf-key-hint" style="margin-top: 4px; display: block;">Found in Cloudflare &rarr; My Profile &rarr; API Tokens &rarr; Global API Key</span>
+      </div>
+
+      <!-- Cloudflare Test Connection Result Banner -->
+      <div id="cf-test-result" style="display:none; padding: 10px 14px; border-radius: 6px; font-size: 13px; line-height: 1.4;"></div>
+
+      <div style="background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.25); border-radius: 6px; padding: 12px;">
+        <p style="font-size: 12px; color: var(--text-secondary, #94a3b8); margin: 0; line-height: 1.4;">
+          ⚡ <strong>OLS Wildcard Mapping:</strong> DEOLS will automatically configure the OpenLiteSpeed virtual host SSL listener and add <code>*.domain.com</code> to the server's listener mapping with zero downtime.
+        </p>
+      </div>
+    </div>
+
+    <!-- Standard SSL Form -->
+    <div id="ssl-standard-panel" class="flex flex-col gap-4" style="display:none">
       <div class="form-group">
         <label>Domain</label>
         <input type="text" id="ssl-domain" placeholder="example.com" required>
@@ -766,25 +1098,242 @@ function showIssueSSLModal() {
         <span class="text-sm">Include www subdomain</span>
       </div>
     </div>
+
+    <!-- Fallback Error Alert Container (DNSChecker integration) -->
+    <div id="ssl-fallback-alert" style="display:none;"></div>
   `, `
     <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-    <button class="btn btn-primary" onclick="issueSSL()">Issue Certificate</button>
+    <button class="btn btn-secondary" id="btn-test-cf" onclick="testCloudflareConnection()">
+      <svg viewBox="0 0 20 20" fill="currentColor" style="width:14px;height:14px;display:inline-block;vertical-align:-2px;"><path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z"/></svg>
+      Test Connection
+    </button>
+    <button class="btn btn-primary" id="btn-issue-ssl" onclick="handleIssueSSLSubmit()">Install Wildcard SSL</button>
   `);
 }
 
-async function issueSSL() {
-  const domain = document.getElementById('ssl-domain').value;
-  const email = document.getElementById('ssl-email').value;
-  const includeWww = document.getElementById('ssl-www').checked;
+function switchSSLTab(tab) {
+  currentSSLTab = tab;
+  const wildcardPanel = document.getElementById('ssl-wildcard-panel');
+  const standardPanel = document.getElementById('ssl-standard-panel');
+  const wildcardBtn = document.getElementById('ssl-tab-wildcard-btn');
+  const standardBtn = document.getElementById('ssl-tab-standard-btn');
+  const testBtn = document.getElementById('btn-test-cf');
+  const issueBtn = document.getElementById('btn-issue-ssl');
+  const fallbackAlert = document.getElementById('ssl-fallback-alert');
+  if (fallbackAlert) fallbackAlert.style.display = 'none';
 
-  toast('Issuing SSL certificate… this may take a moment', 'info', 8000);
-  closeModal();
+  if (tab === 'wildcard') {
+    wildcardPanel.style.display = 'flex';
+    standardPanel.style.display = 'none';
+    wildcardBtn.className = 'btn btn-sm btn-primary';
+    standardBtn.className = 'btn btn-sm btn-secondary';
+    if (testBtn) testBtn.style.display = 'inline-flex';
+    if (issueBtn) issueBtn.textContent = 'Install Wildcard SSL';
+  } else {
+    wildcardPanel.style.display = 'none';
+    standardPanel.style.display = 'flex';
+    wildcardBtn.className = 'btn btn-sm btn-secondary';
+    standardBtn.className = 'btn btn-sm btn-primary';
+    if (testBtn) testBtn.style.display = 'none';
+    if (issueBtn) issueBtn.textContent = 'Issue Standard Certificate';
+  }
+}
+
+function toggleCFAuthFields() {
+  const type = document.getElementById('ssl-cf-auth-type').value;
+  const emailGroup = document.getElementById('cf-email-group');
+  const keyLabel = document.getElementById('cf-key-label');
+  const keyHint = document.getElementById('cf-key-hint');
+  const keyInput = document.getElementById('ssl-cf-key');
+
+  if (type === 'token') {
+    emailGroup.style.display = 'none';
+    keyLabel.textContent = 'Cloudflare API Token';
+    keyHint.textContent = 'Requires Zone:DNS:Edit permissions. Found in My Profile &rarr; API Tokens.';
+    keyInput.placeholder = 'e.g. Abc123Xyz...';
+  } else {
+    emailGroup.style.display = 'block';
+    keyLabel.textContent = 'Cloudflare Global API Key';
+    keyHint.textContent = 'Found in Cloudflare &rarr; My Profile &rarr; API Tokens &rarr; Global API Key';
+    keyInput.placeholder = '••••••••••••••••••••••••';
+  }
+}
+
+function renderSSLErrorFallback(domain, errData) {
+  const alertEl = document.getElementById('ssl-fallback-alert');
+  if (!alertEl) return;
+
+  const serverIp = errData?.serverIp || 'This Server IP';
+  const resolvedIps = errData?.resolvedIps?.length ? errData.resolvedIps.join(', ') : 'Not resolved / None';
+  const dnsCheckerUrl = errData?.dnsCheckerUrl || `https://dnschecker.org/#A/${encodeURIComponent(domain)}`;
+
+  alertEl.style.display = 'block';
+  alertEl.innerHTML = `
+    <div style="background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 8px; padding: 14px; margin-top: 14px; font-size: 13px;">
+      <div style="color: #f87171; font-weight: 700; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
+        <svg viewBox="0 0 20 20" fill="currentColor" style="width: 16px; height: 16px; flex-shrink:0;"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"/></svg>
+        <span>SSL Verification Failed: Domain Not Pointing to This Server</span>
+      </div>
+      <p style="color: var(--text-secondary, #94a3b8); margin-bottom: 10px; line-height: 1.4;">
+        Let's Encrypt could not verify ownership of <strong>${escapeHTML(domain)}</strong>. Your domain may not be pointing to this server IP yet, or DNS has not propagated worldwide.
+      </p>
+      <div style="background: rgba(0,0,0,0.35); border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; font-family: var(--font-mono, monospace); font-size: 12px; line-height: 1.6;">
+        <div>• Required Server IP: <strong style="color: #34d399;">${escapeHTML(serverIp)}</strong></div>
+        <div>• Domain Currently Resolves To: <strong style="color: #f87171;">${escapeHTML(resolvedIps)}</strong></div>
+      </div>
+      <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+        <a href="${dnsCheckerUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-sm" style="background: #0284c7; color: #fff; text-decoration: none; padding: 6px 14px; font-size: 12px; font-weight: 600; border-radius: 6px; display: inline-flex; align-items: center; gap: 6px;">
+          <span>🌐 Check DNS Worldwide on DNSChecker.org</span>
+          <svg viewBox="0 0 20 20" fill="currentColor" style="width: 12px; height: 12px;"><path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z"/><path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z"/></svg>
+        </a>
+      </div>
+      <p style="font-size: 11px; color: var(--text-muted, #64748b); margin-top: 10px; margin-bottom: 0;">
+        💡 <strong>Fix:</strong> Please update your DNS A-Record to point to <code>${escapeHTML(serverIp)}</code>, wait 5 minutes, verify propagation on DNSChecker.org, and click retry.
+      </p>
+    </div>
+  `;
+}
+
+async function testCloudflareConnection() {
+  const domain = document.getElementById('ssl-wildcard-domain')?.value?.trim();
+  const authType = document.getElementById('ssl-cf-auth-type')?.value;
+  const email = document.getElementById('ssl-cf-email')?.value?.trim();
+  const keyOrToken = document.getElementById('ssl-cf-key')?.value?.trim();
+  const resultBanner = document.getElementById('cf-test-result');
+  const testBtn = document.getElementById('btn-test-cf');
+
+  if (!domain) {
+    toast('Please enter a domain to test', 'warning');
+    return;
+  }
+
+  if (authType === 'global' && (!email || !keyOrToken)) {
+    toast('Please enter both Cloudflare Account Email and Global API Key', 'warning');
+    return;
+  }
+
+  if (authType === 'token' && !keyOrToken) {
+    toast('Please enter your Cloudflare API Token', 'warning');
+    return;
+  }
+
+  resultBanner.style.display = 'block';
+  resultBanner.style.background = 'rgba(99,102,241,0.15)';
+  resultBanner.style.border = '1px solid rgba(99,102,241,0.3)';
+  resultBanner.style.color = '#38bdf8';
+  resultBanner.innerHTML = '<span>Checking Cloudflare API connection and DNS zone…</span>';
+
+  testBtn.disabled = true;
+  testBtn.innerHTML = '<span>Verifying…</span>';
+
+  const payload = {
+    domain,
+    email: authType === 'global' ? email : undefined,
+    apiKey: authType === 'global' ? keyOrToken : undefined,
+    apiToken: authType === 'token' ? keyOrToken : undefined,
+  };
+
+  const res = await api('/ssl/cloudflare/test', { method: 'POST', body: payload });
+  testBtn.disabled = false;
+  testBtn.innerHTML = '<svg viewBox="0 0 20 20" fill="currentColor" style="width:14px;height:14px;display:inline-block;vertical-align:-2px;"><path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z"/></svg> Test Connection';
+
+  if (res?.success) {
+    resultBanner.style.background = 'rgba(16,185,129,0.15)';
+    resultBanner.style.border = '1px solid rgba(16,185,129,0.3)';
+    resultBanner.style.color = '#34d399';
+    resultBanner.innerHTML = `<strong>${escapeHTML(res.message || 'Ready to install!')}</strong>`;
+    toast('Cloudflare API verified successfully!', 'success');
+  } else {
+    resultBanner.style.background = 'rgba(239,68,68,0.15)';
+    resultBanner.style.border = '1px solid rgba(239,68,68,0.3)';
+    resultBanner.style.color = '#f87171';
+    resultBanner.innerHTML = `<strong>Connection Failed:</strong> ${escapeHTML(res?.error || 'Unable to connect to Cloudflare')}`;
+    toast(res?.error || 'Cloudflare connection failed', 'error');
+  }
+}
+
+async function handleIssueSSLSubmit() {
+  if (currentSSLTab === 'wildcard') {
+    await issueWildcardSSL();
+  } else {
+    await issueSSL();
+  }
+}
+
+async function issueWildcardSSL() {
+  const domain = document.getElementById('ssl-wildcard-domain')?.value?.trim();
+  const certEmail = document.getElementById('ssl-wildcard-email')?.value?.trim();
+  const authType = document.getElementById('ssl-cf-auth-type')?.value;
+  const cfEmail = document.getElementById('ssl-cf-email')?.value?.trim();
+  const cfKeyOrToken = document.getElementById('ssl-cf-key')?.value?.trim();
+
+  if (!domain) {
+    toast('Domain is required', 'error');
+    return;
+  }
+
+  if (authType === 'global' && (!cfEmail || !cfKeyOrToken)) {
+    toast('Cloudflare Email and Global API Key are required', 'error');
+    return;
+  }
+
+  if (authType === 'token' && !cfKeyOrToken) {
+    toast('Cloudflare API Token is required', 'error');
+    return;
+  }
+
+  const issueBtn = document.getElementById('btn-issue-ssl');
+  issueBtn.disabled = true;
+  issueBtn.innerHTML = '<span>Issuing Wildcard Certificate…</span>';
+  toast('Issuing Wildcard SSL via Cloudflare DNS-01 (~30-40s for DNS propagation)…', 'info', 12000);
+
+  const payload = {
+    domain,
+    email: certEmail || cfEmail,
+    cfEmail: authType === 'global' ? cfEmail : undefined,
+    cfApiKey: authType === 'global' ? cfKeyOrToken : undefined,
+    cfApiToken: authType === 'token' ? cfKeyOrToken : undefined,
+  };
+
+  const res = await api('/ssl/wildcard', { method: 'POST', body: payload });
+  if (res?.success) {
+    toast(res.message || 'Wildcard SSL successfully issued!', 'success', 8000);
+    closeModal();
+    navigateTo('ssl');
+  } else {
+    issueBtn.disabled = false;
+    issueBtn.innerHTML = '<span>Retry Install Wildcard SSL</span>';
+    renderSSLErrorFallback(domain, res);
+    toast(res?.error || 'Failed to issue wildcard SSL', 'error', 10000);
+  }
+}
+
+async function issueSSL() {
+  const domain = document.getElementById('ssl-domain')?.value?.trim();
+  const email = document.getElementById('ssl-email')?.value?.trim();
+  const includeWww = document.getElementById('ssl-www')?.checked;
+
+  if (!domain) {
+    toast('Domain is required', 'error');
+    return;
+  }
+
+  const issueBtn = document.getElementById('btn-issue-ssl');
+  issueBtn.disabled = true;
+  issueBtn.innerHTML = '<span>Verifying & Issuing SSL…</span>';
+  toast('Verifying domain and issuing SSL certificate…', 'info', 8000);
 
   const result = await api('/ssl/issue', { method: 'POST', body: { domain, email, includeWww } });
   if (result?.success) {
-    toast('SSL certificate issued!', 'success');
+    toast('SSL certificate issued successfully!', 'success');
+    closeModal();
     navigateTo('ssl');
-  } else toast(result?.error || 'SSL issuance failed', 'error');
+  } else {
+    issueBtn.disabled = false;
+    issueBtn.innerHTML = '<span>Retry Issue Certificate</span>';
+    renderSSLErrorFallback(domain, result);
+    toast(result?.error || 'SSL issuance failed', 'error', 10000);
+  }
 }
 
 async function renewAllSSL() {
@@ -927,18 +1476,445 @@ async function createFolder() {
   else toast(result?.error || 'Failed', 'error');
 }
 
-// ─── Services Page ──────────────────────────────────────────
+// ─── Services Page (Custom Systemd Unit Editor & Core Daemons) ─────────────
+
+let currentCustomServiceName = 'automation-custom-service.service';
+let customServicesCache = [];
+let customTemplatesCache = {};
+let customServiceInspectionMode = 'status'; // 'status' or 'logs'
 
 async function renderServices(container) {
   container.innerHTML = `
-    <p class="text-muted mb-6">Manage system services running on this server</p>
-    <div class="card">
-      <div class="card-body" id="services-list"><p class="text-muted">Loading services…</p></div>
+    <div class="flex justify-between items-center mb-6">
+      <div>
+        <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 4px;">System Services & Custom Daemons</h2>
+        <p class="text-muted">Linux systemd service controls, daemon-reload, and live custom unit editor (<code>/etc/systemd/system/*.service</code>)</p>
+      </div>
+      <div class="flex gap-2">
+        <button class="btn btn-secondary" id="daemon-reload-btn" onclick="triggerDaemonReload()" title="Execute systemctl daemon-reload across all units">
+          <svg viewBox="0 0 20 20" fill="currentColor" class="btn-icon"><path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z"/></svg>
+          <span id="daemon-reload-text">daemon-reload</span>
+        </button>
+        <button class="btn btn-primary" onclick="createNewCustomServiceUI()" title="Create a new custom systemd service">
+          <svg viewBox="0 0 20 20" fill="currentColor" class="btn-icon"><path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z"/></svg>
+          + New Service
+        </button>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div class="flex gap-2 mb-6" style="border-bottom: 1px solid var(--border-secondary); padding-bottom: 12px;">
+      <button class="btn btn-sm btn-primary" id="services-tab-custom-btn" onclick="switchServicesTab('custom')">
+        <svg viewBox="0 0 20 20" fill="currentColor" class="btn-icon"><path fill-rule="evenodd" d="M2 5a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm3.293 1.293a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 01-1.414-1.414L7.586 10 5.293 7.707a1 1 0 010-1.414zM11 12a1 1 0 100 2h3a1 1 0 100-2h-3z"/></svg>
+        Custom Systemd Units (/etc/systemd/system)
+      </button>
+      <button class="btn btn-sm btn-secondary" id="services-tab-core-btn" onclick="switchServicesTab('core')">
+        <svg viewBox="0 0 20 20" fill="currentColor" class="btn-icon"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z"/></svg>
+        Core Server Engines
+      </button>
+    </div>
+
+    <!-- Tab 1: Custom Services Area -->
+    <div id="services-custom-view">
+      <div id="custom-services-container">
+        <p class="text-muted">Loading custom systemd service manager…</p>
+      </div>
+    </div>
+
+    <!-- Tab 2: Core Server Engines -->
+    <div id="services-core-view" style="display: none;">
+      <div class="card">
+        <div class="card-body" id="services-list"><p class="text-muted">Loading core services…</p></div>
+      </div>
     </div>
   `;
 
+  await Promise.all([loadCustomServicesManager(), loadCoreServicesList()]);
+}
+
+function switchServicesTab(tab) {
+  const customView = document.getElementById('services-custom-view');
+  const coreView = document.getElementById('services-core-view');
+  const customBtn = document.getElementById('services-tab-custom-btn');
+  const coreBtn = document.getElementById('services-tab-core-btn');
+
+  if (tab === 'custom') {
+    if (customView) customView.style.display = 'block';
+    if (coreView) coreView.style.display = 'none';
+    if (customBtn) customBtn.className = 'btn btn-sm btn-primary';
+    if (coreBtn) coreBtn.className = 'btn btn-sm btn-secondary';
+  } else {
+    if (customView) customView.style.display = 'none';
+    if (coreView) coreView.style.display = 'block';
+    if (customBtn) customBtn.className = 'btn btn-sm btn-secondary';
+    if (coreBtn) coreBtn.className = 'btn btn-sm btn-primary';
+  }
+}
+
+async function triggerDaemonReload() {
+  const btn = document.getElementById('daemon-reload-btn');
+  const text = document.getElementById('daemon-reload-text');
+  if (btn) btn.disabled = true;
+  if (text) text.textContent = 'Reloading…';
+
+  toast('Executing systemctl daemon-reload…', 'info');
+  try {
+    const res = await api('/services/daemon-reload', { method: 'POST' });
+    if (res?.success) {
+      toast(res.message || 'systemd daemon reloaded successfully', 'success');
+      await loadCustomServicesManager(currentCustomServiceName);
+    } else {
+      toast(res?.error || 'Failed to reload systemd daemon', 'error');
+    }
+  } catch (err) {
+    toast(`daemon-reload error: ${err.message}`, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+    if (text) text.textContent = 'daemon-reload';
+  }
+}
+
+async function loadCustomServicesManager(targetServiceName) {
+  const container = document.getElementById('custom-services-container');
+  if (!container) return;
+
+  const [servicesRes, templatesRes] = await Promise.all([
+    api('/services/custom'),
+    api('/services/custom/templates'),
+  ]);
+
+  customServicesCache = servicesRes?.services || [];
+  customTemplatesCache = templatesRes?.templates || {};
+
+  // Pick active service
+  if (targetServiceName) {
+    currentCustomServiceName = targetServiceName;
+  } else if (!customServicesCache.some(s => s.serviceName === currentCustomServiceName)) {
+    if (customServicesCache.length > 0) {
+      currentCustomServiceName = customServicesCache[0].serviceName;
+    } else {
+      currentCustomServiceName = 'automation-custom-service.service';
+    }
+  }
+
+  // Load details for current service
+  const detailRes = await api(`/services/custom/${currentCustomServiceName}`);
+  const s = detailRes || {
+    name: currentCustomServiceName.replace(/\.service$/, ''),
+    serviceName: currentCustomServiceName,
+    path: `/etc/systemd/system/${currentCustomServiceName}`,
+    exists: false,
+    content: customTemplatesCache['automation-custom-service']?.content || '',
+    active: false,
+    enabled: false,
+    statusText: 'inactive',
+    statusOutput: 'Service not active or unit file pending creation',
+  };
+
+  const isExisting = s.exists !== false;
+  const statusColorClass = s.active ? 'service-badge-active' : (s.statusText === 'failed' ? 'service-badge-failed' : 'service-badge-inactive');
+
+  container.innerHTML = `
+    <!-- Top Selector & Controls Bar -->
+    <div class="card mb-5" style="border: 1px solid var(--border-secondary);">
+      <div class="card-body" style="padding: 16px 20px;">
+        <div class="flex justify-between items-center flex-wrap gap-4">
+          <!-- Left: Service Selector & Nano badge -->
+          <div class="flex items-center gap-3 flex-wrap">
+            <div style="min-width: 220px;">
+              <label class="text-xs text-muted block mb-1 font-semibold">Select Service Unit</label>
+              <select class="input" style="padding: 6px 12px; font-weight: 600; font-family: var(--font-mono); font-size: 0.85rem;" onchange="selectCustomService(this.value)">
+                ${customServicesCache.map(svc => `
+                  <option value="${escapeHTML(svc.serviceName)}" ${svc.serviceName === currentCustomServiceName ? 'selected' : ''}>
+                    ${svc.active ? '● ' : '○ '} ${escapeHTML(svc.serviceName)} ${svc.active ? '(active)' : ''}
+                  </option>
+                `).join('')}
+                <option value="__NEW__">+ Create New Service…</option>
+              </select>
+            </div>
+
+            <div>
+              <label class="text-xs text-muted block mb-1 font-semibold">Terminal Nano Path</label>
+              <div class="flex items-center gap-2" style="background: rgba(0,0,0,0.3); padding: 6px 12px; border-radius: var(--radius-md); border: 1px solid var(--border-secondary);">
+                <code class="text-mono text-xs" style="color: #38bdf8;">nano ${escapeHTML(s.path)}</code>
+                <button type="button" class="btn btn-sm" onclick="copyNanoCmd('${escapeHTML(s.serviceName)}')" style="padding: 2px 8px; font-size: 11px;">Copy</button>
+              </div>
+            </div>
+
+            <div>
+              <label class="text-xs text-muted block mb-1 font-semibold">Insert Preset Template</label>
+              <select class="input" style="padding: 6px 10px; font-size: 0.8rem;" onchange="applyServiceTemplate(this.value)">
+                <option value="">Load Template…</option>
+                <option value="automation-custom-service">Python Automation Watcher (automation-custom-service.service)</option>
+                <option value="node-worker">Node.js Worker Daemon</option>
+                <option value="shell-watcher">Shell Automation Watcher</option>
+                <option value="generic-service">Generic Background Service</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Right: Action Buttons -->
+          <div class="flex items-center gap-2 flex-wrap">
+            <button class="btn btn-primary" onclick="saveCustomService()" id="save-service-btn" title="Save unit file to /etc/systemd/system and reload systemd daemon">
+              <svg viewBox="0 0 20 20" fill="currentColor" class="btn-icon"><path d="M7.707 10.293a1 1 0 10-1.414 1.414l3 3a1 1 0 001.414 0l6-6a1 1 0 00-1.414-1.414L11 11.586l-3.293-3.293z"/></svg>
+              Save & Apply
+            </button>
+            <button class="btn btn-warning" onclick="customServiceAction('restart')" title="Execute systemctl restart">
+              <svg viewBox="0 0 20 20" fill="currentColor" class="btn-icon"><path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z"/></svg>
+              Restart
+            </button>
+            ${s.active ? `
+              <button class="btn btn-danger" onclick="customServiceAction('stop')" title="Execute systemctl stop">Stop</button>
+            ` : `
+              <button class="btn btn-success" onclick="customServiceAction('start')" title="Execute systemctl start">Start</button>
+            `}
+            <button class="btn btn-secondary" onclick="customServiceAction('${s.enabled ? 'disable' : 'enable'}')" title="${s.enabled ? 'Disable auto-start on boot' : 'Enable auto-start on boot'}">
+              ${s.enabled ? 'Disable Boot' : 'Enable Boot'}
+            </button>
+            <button class="btn btn-secondary" onclick="loadCustomServicesManager('${escapeHTML(s.serviceName)}')" title="Refresh status and status text">
+              Status
+            </button>
+            ${isExisting ? `
+              <button class="btn btn-secondary" style="color: var(--danger); border-color: rgba(239, 68, 68, 0.4);" onclick="deleteCustomService()" title="Stop, disable and delete this service file">
+                Delete
+              </button>
+            ` : ''}
+          </div>
+        </div>
+
+        <!-- Live Status Bar -->
+        <div class="flex items-center gap-3 mt-4 pt-3 flex-wrap" style="border-top: 1px solid var(--border-primary);">
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-muted font-semibold">Service Status:</span>
+            <span class="badge ${statusColorClass}">
+              <span class="status-dot ${s.active ? 'active' : 'inactive'}" style="margin-right: 4px; display: inline-block;"></span>
+              ${escapeHTML(s.statusText || (s.active ? 'active (running)' : 'inactive (dead)'))}
+            </span>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-muted font-semibold">Boot Startup:</span>
+            <span class="badge badge-${s.enabled ? 'success' : 'secondary'}">
+              ${s.enabled ? 'enabled (auto-starts)' : 'disabled'}
+            </span>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-muted font-semibold">System Unit:</span>
+            <span class="text-xs text-mono" style="color: var(--text-secondary);">${escapeHTML(s.serviceName)}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- The Nano / Custom Service Code Editor Box -->
+    <div class="nano-editor-container">
+      <div class="nano-editor-header">
+        <div class="flex items-center gap-3">
+          <div class="flex gap-1">
+            <span class="terminal-dot red"></span>
+            <span class="terminal-dot yellow"></span>
+            <span class="terminal-dot green"></span>
+          </div>
+          <span class="nano-editor-title">
+            <svg viewBox="0 0 20 20" fill="currentColor" style="width: 15px; height: 15px; color: #58a6ff;"><path fill-rule="evenodd" d="M12.316 3.051a1 1 0 01.633 1.265l-4 12a1 1 0 11-1.898-.632l4-12a1 1 0 011.265-.633zM5.707 6.293a1 1 0 010 1.414L3.414 10l2.293 2.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0zm8.586 0a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L16.586 10l-2.293-2.293a1 1 0 010-1.414z"/></svg>
+            GNU nano 7.2 &bull; /etc/systemd/system/${escapeHTML(s.serviceName)}
+          </span>
+        </div>
+        <div class="flex items-center gap-3">
+          <span class="text-xs text-muted">Systemd Unit Configuration</span>
+        </div>
+      </div>
+
+      <textarea id="custom-service-code" class="nano-textarea" spellcheck="false" placeholder="[Unit]
+Description=My Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 /path/to/script.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target">${escapeHTML(s.content || '')}</textarea>
+
+      <div class="nano-editor-footer">
+        <div class="flex items-center flex-wrap">
+          <span class="nano-shortcut-badge"><strong>^O</strong> Save & Apply</span>
+          <span class="nano-shortcut-badge"><strong>^R</strong> daemon-reload</span>
+          <span class="nano-shortcut-badge"><strong>^T</strong> Restart</span>
+          <span class="nano-shortcut-badge"><strong>^L</strong> Journal Logs</span>
+        </div>
+        <div class="text-xs text-muted">
+          Path: <code>/etc/systemd/system/${escapeHTML(s.serviceName)}</code>
+        </div>
+      </div>
+    </div>
+
+    <!-- Live Inspection Panel (Status Output & Journalctl Logs) -->
+    <div class="card">
+      <div class="card-header flex justify-between items-center" style="padding: 12px 18px; border-bottom: 1px solid var(--border-primary);">
+        <div class="flex items-center gap-2">
+          <button class="btn btn-sm ${customServiceInspectionMode === 'status' ? 'btn-primary' : 'btn-secondary'}" id="inspect-tab-status" onclick="setCustomServiceInspection('status')">
+            systemctl status ${escapeHTML(s.serviceName)}
+          </button>
+          <button class="btn btn-sm ${customServiceInspectionMode === 'logs' ? 'btn-primary' : 'btn-secondary'}" id="inspect-tab-logs" onclick="setCustomServiceInspection('logs')">
+            journalctl -u ${escapeHTML(s.serviceName)} -n 100
+          </button>
+        </div>
+        <div class="flex items-center gap-2">
+          <button class="btn btn-sm btn-secondary" onclick="refreshInspectionPanel()" title="Refresh live terminal output">
+            <svg viewBox="0 0 20 20" fill="currentColor" class="btn-icon"><path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z"/></svg>
+            Refresh
+          </button>
+        </div>
+      </div>
+      <div class="card-body" style="padding: 16px;">
+        <pre class="status-terminal-box" id="service-inspect-output">${escapeHTML(s.statusOutput || 'Loading output…')}</pre>
+      </div>
+    </div>
+  `;
+}
+
+function selectCustomService(val) {
+  if (val === '__NEW__') {
+    createNewCustomServiceUI();
+  } else {
+    currentCustomServiceName = val;
+    loadCustomServicesManager(val);
+  }
+}
+
+function copyNanoCmd(serviceName) {
+  const cmd = `nano /etc/systemd/system/${serviceName}`;
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(cmd);
+  }
+  toast(`Copied command: ${cmd}`, 'success');
+}
+
+function createNewCustomServiceUI() {
+  const name = prompt('Enter custom systemd service name (e.g. automation-custom-service.service):', 'automation-custom-service.service');
+  if (!name || !name.trim()) return;
+
+  let clean = name.trim();
+  if (!clean.endsWith('.service')) clean = `${clean}.service`;
+
+  currentCustomServiceName = clean;
+  loadCustomServicesManager(clean);
+  toast(`Creating new service unit: ${clean}`, 'info');
+}
+
+function applyServiceTemplate(tplKey) {
+  if (!tplKey || !customTemplatesCache[tplKey]) return;
+  const tpl = customTemplatesCache[tplKey];
+  const textarea = document.getElementById('custom-service-code');
+  if (textarea) {
+    textarea.value = tpl.content;
+    toast(`Loaded template: ${tpl.title}`, 'success');
+  }
+}
+
+async function saveCustomService() {
+  const textarea = document.getElementById('custom-service-code');
+  if (!textarea) return;
+
+  const content = textarea.value;
+  if (!content.trim()) {
+    return toast('Service unit content cannot be empty', 'error');
+  }
+
+  const btn = document.getElementById('save-service-btn');
+  if (btn) btn.disabled = true;
+  toast(`Saving ${currentCustomServiceName} & reloading systemd…`, 'info');
+
+  try {
+    const res = await api('/services/custom', {
+      method: 'POST',
+      body: {
+        name: currentCustomServiceName,
+        content,
+        enable: true,
+        restart: false,
+      }
+    });
+
+    if (res?.success) {
+      toast(res.message || `Service ${currentCustomServiceName} saved successfully!`, 'success', 5000);
+      await loadCustomServicesManager(currentCustomServiceName);
+    } else {
+      toast(res?.error || 'Failed to save service unit', 'error', 6000);
+    }
+  } catch (err) {
+    toast(`Save error: ${err.message}`, 'error', 6000);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function customServiceAction(action) {
+  toast(`Executing systemctl ${action} ${currentCustomServiceName}…`, 'info');
+  try {
+    const res = await api(`/services/custom/${currentCustomServiceName}/${action}`, { method: 'POST' });
+    if (res?.success) {
+      toast(res.message || `${action} succeeded for ${currentCustomServiceName}`, 'success');
+      await loadCustomServicesManager(currentCustomServiceName);
+    } else {
+      toast(res?.error || `Failed to ${action} ${currentCustomServiceName}`, 'error');
+    }
+  } catch (err) {
+    toast(`Error: ${err.message}`, 'error');
+  }
+}
+
+async function deleteCustomService() {
+  if (!confirm(`Are you sure you want to stop, disable, and permanently delete /etc/systemd/system/${currentCustomServiceName}?`)) return;
+
+  toast(`Deleting ${currentCustomServiceName}…`, 'info');
+  try {
+    const res = await api(`/services/custom/${currentCustomServiceName}`, { method: 'DELETE' });
+    if (res?.success) {
+      toast(res.message || `Deleted ${currentCustomServiceName}`, 'success');
+      currentCustomServiceName = 'automation-custom-service.service';
+      await loadCustomServicesManager();
+    } else {
+      toast(res?.error || `Failed to delete ${currentCustomServiceName}`, 'error');
+    }
+  } catch (err) {
+    toast(`Delete error: ${err.message}`, 'error');
+  }
+}
+
+async function setCustomServiceInspection(mode) {
+  customServiceInspectionMode = mode;
+  const tabStatus = document.getElementById('inspect-tab-status');
+  const tabLogs = document.getElementById('inspect-tab-logs');
+  if (tabStatus && tabLogs) {
+    tabStatus.className = `btn btn-sm ${mode === 'status' ? 'btn-primary' : 'btn-secondary'}`;
+    tabLogs.className = `btn btn-sm ${mode === 'logs' ? 'btn-primary' : 'btn-secondary'}`;
+  }
+  await refreshInspectionPanel();
+}
+
+async function refreshInspectionPanel() {
+  const box = document.getElementById('service-inspect-output');
+  if (!box) return;
+
+  box.textContent = 'Loading live output…';
+  if (customServiceInspectionMode === 'status') {
+    const detail = await api(`/services/custom/${currentCustomServiceName}`);
+    box.textContent = detail?.statusOutput || 'No status available';
+  } else {
+    const logsRes = await api(`/services/custom/${currentCustomServiceName}/logs?lines=100`);
+    box.textContent = logsRes?.logs || 'No journal logs found';
+  }
+}
+
+async function loadCoreServicesList() {
   const data = await api('/services');
   const el = document.getElementById('services-list');
+  if (!el) return;
 
   if (data?.services) {
     el.innerHTML = data.services.map((s) => `
@@ -960,8 +1936,408 @@ async function renderServices(container) {
 
 async function svcAction(name, action) {
   const result = await api(`/services/${name}/${action}`, { method: 'POST' });
-  if (result?.success) { toast(`${name}: ${action} successful`, 'success'); navigateTo('services'); }
+  if (result?.success) { toast(`${name}: ${action} successful`, 'success'); loadCoreServicesList(); }
   else toast(result?.error || `Failed to ${action} ${name}`, 'error');
+}
+
+// ─── OpenLiteSpeed (OLS) & WebAdmin Page ─────────────────────
+
+async function renderOLS(container) {
+  container.innerHTML = `
+    <div class="flex justify-between items-center mb-6">
+      <div>
+        <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 4px;">OpenLiteSpeed Web Engine & WebAdmin</h2>
+        <p class="text-muted">CyberPanel-grade OLS service controls, virtual hosts, dual listeners, and WebAdmin console</p>
+      </div>
+      <div class="flex gap-2">
+        <button class="btn btn-secondary" id="ols-sync-btn" title="Synchronize all DEOLS sites with OLS virtual hosts and dual listeners">
+          <svg viewBox="0 0 20 20" fill="currentColor" class="btn-icon"><path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z"/></svg>
+          Sync with OLS
+        </button>
+        <button class="btn btn-secondary" id="ols-reload-btn">
+          <svg viewBox="0 0 20 20" fill="currentColor" class="btn-icon"><path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z"/></svg>
+          Reload Config
+        </button>
+        <button class="btn btn-primary" id="ols-restart-btn">
+          <svg viewBox="0 0 20 20" fill="currentColor" class="btn-icon"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z"/></svg>
+          Restart OLS
+        </button>
+      </div>
+    </div>
+
+    <div id="ols-content">
+      <p class="text-muted">Loading OpenLiteSpeed status and virtual host maps…</p>
+    </div>
+  `;
+
+  document.getElementById('ols-sync-btn')?.addEventListener('click', async () => {
+    toast('Synchronizing DEOLS websites with OLS Virtual Hosts and Listeners…', 'info');
+    const res = await api('/ols/sync', { method: 'POST' });
+    if (res?.success) {
+      toast(res.message || 'OLS configuration synchronized successfully!', 'success');
+      renderOLS(container);
+    } else {
+      toast(res?.error || 'Failed to sync with OLS', 'error');
+    }
+  });
+
+  document.getElementById('ols-restart-btn')?.addEventListener('click', async () => {
+    toast('Restarting OpenLiteSpeed…', 'info');
+    const res = await api('/ols/restart', { method: 'POST' });
+    if (res?.success) {
+      toast('OpenLiteSpeed restarted successfully', 'success');
+      renderOLS(container);
+    } else {
+      toast(res?.error || 'Failed to restart OLS', 'error');
+    }
+  });
+
+  document.getElementById('ols-reload-btn')?.addEventListener('click', async () => {
+    toast('Reloading OpenLiteSpeed config…', 'info');
+    const res = await api('/ols/reload', { method: 'POST' });
+    if (res?.success) {
+      toast('Configuration reloaded smoothly', 'success');
+      renderOLS(container);
+    } else {
+      toast(res?.error || 'Failed to reload OLS', 'error');
+    }
+  });
+
+  const [data, vhostsRes, listenersRes] = await Promise.all([
+    api('/ols/status'),
+    api('/ols/vhosts'),
+    api('/ols/listeners'),
+  ]);
+
+  const contentEl = document.getElementById('ols-content');
+  if (!contentEl) return;
+
+  if (!data) {
+    contentEl.innerHTML = `<div class="card"><div class="card-body"><p class="text-danger">Failed to communicate with OLS management service.</p></div></div>`;
+    return;
+  }
+
+  const hostname = window.location.hostname || 'localhost';
+  const adminUrl = `https://${hostname}:${data.adminPort || 7080}`;
+
+  const vhosts = vhostsRes?.vhosts || [];
+  const listeners = listenersRes?.listeners || [];
+
+  const vhostsRows = vhosts.length > 0
+    ? vhosts.map((vh) => `
+        <tr>
+          <td>
+            <strong>${escapeHTML(vh.name)}</strong>
+            ${vh.mappedDomains?.length > 0 ? `<div class="text-xs text-muted truncate" style="max-width:260px;" title="${escapeHTML(vh.mappedDomains.join(', '))}">${escapeHTML(vh.mappedDomains.join(', '))}</div>` : ''}
+          </td>
+          <td><code class="text-mono text-xs">${escapeHTML(vh.vhRoot || '-')}</code></td>
+          <td>
+            ${vh.hasSSL
+              ? '<span class="badge badge-success">✓ vhssl (Active)</span>'
+              : '<span class="badge badge-warning">No SSL</span>'}
+          </td>
+          <td>
+            ${vh.phpSocket
+              ? `<code class="text-xs text-mono" style="color: #38bdf8;">${escapeHTML(vh.phpSocket)}</code>`
+              : '<span class="text-xs text-muted">Server Default</span>'}
+          </td>
+          <td>
+            ${(vh.listeners || []).map((l) => `<span class="badge ${l.toLowerCase().includes('https') ? 'badge-primary' : 'badge-info'}">${escapeHTML(l)}</span>`).join(' ') || '<span class="badge badge-danger">Unmapped</span>'}
+          </td>
+          <td>
+            <button class="btn btn-secondary btn-sm ols-view-vhost-btn" data-domain="${escapeHTML(vh.name)}" title="Inspect Virtual Host Configuration">
+              View Config
+            </button>
+          </td>
+        </tr>
+      `).join('')
+    : `<tr><td colspan="6" class="text-center text-muted py-4">No Virtual Hosts configured in OLS httpd_config.conf yet. Click <strong>Sync with OLS</strong> to populate.</td></tr>`;
+
+  const listenersRows = listeners.length > 0
+    ? listeners.map((l) => `
+        <tr>
+          <td><strong>${escapeHTML(l.name)}</strong></td>
+          <td><code class="text-mono">${escapeHTML(l.address || l.binding || '-')}</code></td>
+          <td>
+            ${l.secure
+              ? '<span class="badge badge-success">🔒 HTTPS (SNI Enabled)</span>'
+              : '<span class="badge badge-info">🌐 HTTP (Plain :80)</span>'}
+          </td>
+          <td>
+            ${l.mappings?.length > 0
+              ? l.mappings.map((m) => `
+                  <div style="margin-bottom: 4px;">
+                    <strong style="color: var(--accent-light, #818cf8);">${escapeHTML(m.vhost)}:</strong>
+                    <span class="text-xs text-secondary">${escapeHTML(m.domains)}</span>
+                  </div>
+                `).join('')
+              : '<span class="text-xs text-muted">No virtual hosts mapped to this listener</span>'}
+          </td>
+        </tr>
+      `).join('')
+    : `<tr><td colspan="4" class="text-center text-muted py-4">No listeners detected in httpd_config.conf.</td></tr>`;
+
+  contentEl.innerHTML = `
+    <div class="grid grid-2 gap-6 mb-6">
+      <!-- WebAdmin Access Card -->
+      <div class="card">
+        <div class="card-header flex justify-between items-center">
+          <div class="flex items-center gap-2">
+            <span class="status-dot ${data.active ? 'active' : 'inactive'}"></span>
+            <h3 class="card-title">OLS WebAdmin Console</h3>
+          </div>
+          <span class="badge badge-${data.active ? 'success' : 'danger'}">${data.active ? 'Running' : 'Stopped'}</span>
+        </div>
+        <div class="card-body">
+          <p class="text-sm text-secondary mb-4">
+            OpenLiteSpeed provides an advanced WebAdmin GUI for fine-grained listener, virtual host, cache module, and LSPHP worker tuning.
+          </p>
+          <div style="background: rgba(0,0,0,0.3); border-radius: 8px; padding: 14px; margin-bottom: 16px;">
+            <div class="flex justify-between items-center mb-2">
+              <span class="text-xs text-muted">WebAdmin URL:</span>
+              <span class="text-xs text-mono" style="color: var(--accent-light, #818cf8); font-weight: 600;">${adminUrl}</span>
+            </div>
+            <div class="flex justify-between items-center mb-2">
+              <span class="text-xs text-muted">Admin Port:</span>
+              <span class="text-xs text-mono">${data.adminPort || 7080} (HTTPS)</span>
+            </div>
+            <div class="flex justify-between items-center">
+              <span class="text-xs text-muted">Default Username:</span>
+              <span class="text-xs text-mono font-bold">admin</span>
+            </div>
+          </div>
+          <div class="flex gap-2">
+            <a href="${adminUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-full flex items-center justify-center gap-2">
+              <span>Open WebAdmin Console</span>
+              <svg viewBox="0 0 20 20" fill="currentColor" style="width: 14px; height: 14px;"><path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z"/><path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z"/></svg>
+            </a>
+          </div>
+          <p class="text-xs text-muted mt-3">
+            Note: The WebAdmin interface uses a self-signed certificate by default. Click "Advanced &rarr; Proceed" in your browser when prompted.
+          </p>
+        </div>
+      </div>
+
+      <!-- OLS Password Reset Tool -->
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">Reset OLS WebAdmin Password</h3>
+        </div>
+        <div class="card-body">
+          <p class="text-sm text-secondary mb-4">
+            Reset or update the credentials for user <code>admin</code> to access the OpenLiteSpeed WebAdmin panel on port 7080.
+          </p>
+          <form id="ols-password-form">
+            <div class="form-group mb-3">
+              <label for="ols-new-pass">New OLS Admin Password</label>
+              <input type="password" id="ols-new-pass" placeholder="Min. 6 characters" required minlength="6" autocomplete="new-password">
+            </div>
+            <button type="submit" class="btn btn-secondary btn-full" id="ols-pass-btn">
+              <span>Update OLS Password</span>
+            </button>
+          </form>
+          <div style="margin-top: 14px; padding: 10px 12px; background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.2); border-radius: 6px;">
+            <p style="font-size: 11px; color: var(--text-secondary, #94a3b8); margin: 0; line-height: 1.4;">
+              <strong>Root SSH Shortcut:</strong> You can also reset this from your server terminal anytime by running:
+              <br><code style="color: #38bdf8;">deols ols password &lt;new_password&gt;</code> or <code style="color: #38bdf8;">deols ols reset-pass</code>
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Runtime & Environment Metrics -->
+    <div class="grid grid-3 gap-6 mb-6">
+      <div class="card">
+        <div class="card-body text-center">
+          <p class="text-xs text-muted uppercase">Engine Version</p>
+          <p style="font-size: 1.5rem; font-weight: 700; color: var(--accent-light, #818cf8); margin: 8px 0;">${data.version}</p>
+          <span class="text-xs text-secondary">OpenLiteSpeed Edition</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-body text-center">
+          <p class="text-xs text-muted uppercase">Main Process (PID)</p>
+          <p style="font-size: 1.5rem; font-weight: 700; color: #10b981; margin: 8px 0;">${data.pid || 'Inactive'}</p>
+          <span class="text-xs text-secondary">Uptime: ${data.uptime || 'N/A'}</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-body text-center">
+          <p class="text-xs text-muted uppercase">Memory Usage (RSS)</p>
+          <p style="font-size: 1.5rem; font-weight: 700; color: #38bdf8; margin: 8px 0;">${data.memoryMB} MB</p>
+          <span class="text-xs text-secondary">Ultra-low footprint</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Virtual Hosts in OpenLiteSpeed (CyberPanel Model) -->
+    <div class="card mb-6">
+      <div class="card-header flex justify-between items-center">
+        <div>
+          <h3 class="card-title">Virtual Hosts in OpenLiteSpeed</h3>
+          <p class="text-xs text-secondary">Defined in httpd_config.conf and synchronized with OLS WebAdmin (Port 7080)</p>
+        </div>
+        <span class="badge badge-info">${vhosts.length} Virtual Hosts</span>
+      </div>
+      <div class="card-body">
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Virtual Host</th>
+                <th>Root Path (vhRoot)</th>
+                <th>SSL Status</th>
+                <th>Isolated PHP Socket</th>
+                <th>Mapped Listeners</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${vhostsRows}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Active OpenLiteSpeed Listeners (CyberPanel Dual Architecture) -->
+    <div class="card mb-6">
+      <div class="card-header flex justify-between items-center">
+        <div>
+          <h3 class="card-title">Active Listeners (CyberPanel Dual Architecture)</h3>
+          <p class="text-xs text-secondary">Port 80 (HTTP) & Port 443 (HTTPS SNI) listeners in httpd_config.conf routing traffic to virtual hosts</p>
+        </div>
+        <span class="badge badge-success">${listeners.length} Active Listeners</span>
+      </div>
+      <div class="card-body">
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Listener Name</th>
+                <th>IP / Port</th>
+                <th>Protocol & SNI</th>
+                <th>Mapped Virtual Hosts & Aliases</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${listenersRows}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- System Architecture & Configuration Paths -->
+    <div class="card mb-6">
+      <div class="card-header">
+        <h3 class="card-title">OpenLiteSpeed Architecture & Path Matrix</h3>
+      </div>
+      <div class="card-body">
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr><th>Component</th><th>Path on Debian 12</th><th>Purpose</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>LSWS Base Directory</strong></td>
+                <td><code class="text-mono">${data.olsRoot || '/usr/local/lsws'}</code></td>
+                <td>Core OpenLiteSpeed installation prefix</td>
+              </tr>
+              <tr>
+                <td><strong>Main HTTPD Config</strong></td>
+                <td><code class="text-mono">/usr/local/lsws/conf/httpd_config.conf</code></td>
+                <td>Server-level listeners, modules, and external apps</td>
+              </tr>
+              <tr>
+                <td><strong>Virtual Hosts Directory</strong></td>
+                <td><code class="text-mono">/usr/local/lsws/conf/vhosts/</code></td>
+                <td>Individual website configs auto-managed by DEOLS</td>
+              </tr>
+              <tr>
+                <td><strong>WebAdmin Password File</strong></td>
+                <td><code class="text-mono">/usr/local/lsws/admin/conf/htpasswd</code></td>
+                <td>Encrypted credentials for port 7080 access</td>
+              </tr>
+              <tr>
+                <td><strong>LSCache Cache Data</strong></td>
+                <td><code class="text-mono">/usr/local/lsws/cachedata</code></td>
+                <td>High-speed page cache storage engine</td>
+              </tr>
+              <tr>
+                <td><strong>Server Error Log</strong></td>
+                <td><code class="text-mono">/usr/local/lsws/logs/error.log</code></td>
+                <td>Engine error and startup diagnostics</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Attach "View Config" modal inspection handlers
+  contentEl.querySelectorAll('.ols-view-vhost-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const domain = btn.getAttribute('data-domain');
+      if (!domain) return;
+      toast(`Loading OLS config for ${domain}…`, 'info');
+      const res = await api(`/ols/vhost/${encodeURIComponent(domain)}/config`);
+      if (!res) return;
+
+      showModal(
+        `OLS Configuration: ${domain}`,
+        `
+          <div style="margin-bottom: 16px;">
+            <div class="flex justify-between items-center mb-1">
+              <h4 style="font-size: 13px; font-weight: 600; color: var(--accent-light, #818cf8);">
+                1. Virtual Host Directive in httpd_config.conf
+              </h4>
+              <span class="text-xs text-muted text-mono">/usr/local/lsws/conf/httpd_config.conf</span>
+            </div>
+            <pre style="background: rgba(0,0,0,0.5); padding: 12px; border-radius: 6px; font-size: 12px; max-height: 180px; overflow: auto; color: #38bdf8;"><code>${escapeHTML(res.httpdSnippet || 'No direct block found in httpd_config.conf')}</code></pre>
+          </div>
+
+          <div>
+            <div class="flex justify-between items-center mb-1">
+              <h4 style="font-size: 13px; font-weight: 600; color: var(--accent-light, #818cf8);">
+                2. Virtual Host Config File (vhconf.conf)
+              </h4>
+              <span class="text-xs text-mono text-muted">${escapeHTML(res.vhconfPath || '')}</span>
+            </div>
+            <pre style="background: rgba(0,0,0,0.5); padding: 12px; border-radius: 6px; font-size: 12px; max-height: 320px; overflow: auto; color: #e2e8f0;"><code>${escapeHTML(res.vhconfContent || 'File not found on disk')}</code></pre>
+          </div>
+        `,
+        `<button class="btn btn-secondary" onclick="closeModal()">Close</button>`
+      );
+    });
+  });
+
+  // Attach password reset form handler
+  document.getElementById('ols-password-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const pass = document.getElementById('ols-new-pass').value;
+    if (!pass || pass.length < 6) {
+      toast('Password must be at least 6 characters', 'error');
+      return;
+    }
+    const btn = document.getElementById('ols-pass-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<span>Updating…</span>';
+
+    const res = await api('/ols/password', { method: 'POST', body: { password: pass } });
+    btn.disabled = false;
+    btn.innerHTML = '<span>Update OLS Password</span>';
+
+    if (res?.success) {
+      toast('OLS WebAdmin password successfully updated!', 'success');
+      document.getElementById('ols-new-pass').value = '';
+    } else {
+      toast(res?.error || 'Failed to update OLS password', 'error');
+    }
+  });
 }
 
 // ─── Cache Page ─────────────────────────────────────────────
@@ -1040,37 +2416,326 @@ async function flushMemcached() {
 async function renderCron(container) {
   container.innerHTML = `
     <div class="flex justify-between items-center mb-6">
-      <p class="text-muted">Manage cron jobs</p>
-      <button class="btn btn-primary" onclick="showNewCronModal()">+ Add Cron Job</button>
+      <div>
+        <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 4px;">Server-Side Automation & Cron Engine</h2>
+        <p class="text-muted">Background daemon for WordPress WP-Cron, automated SSL renewal, OLS cache maintenance, and custom scheduled tasks</p>
+      </div>
+      <div class="flex gap-2">
+        <button class="btn btn-secondary" onclick="showNewCronModal()">+ Standard Crontab</button>
+        <button class="btn btn-primary" onclick="showNewAutomationModal()">+ Add Automation Task</button>
+      </div>
     </div>
-    <div class="card">
-      <div class="card-body" id="cron-list"><p class="text-muted">Loading…</p></div>
+
+    <!-- Daemon Status Banner -->
+    <div class="card mb-6" style="background: linear-gradient(135deg, rgba(99,102,241,0.08) 0%, rgba(16,185,129,0.05) 100%); border-color: rgba(99,102,241,0.2);">
+      <div class="card-body flex justify-between items-center py-4">
+        <div class="flex items-center gap-3">
+          <span class="status-dot active"></span>
+          <div>
+            <strong style="color: var(--accent-light, #818cf8);">DEOLS Automation Daemon: Active</strong>
+            <p class="text-xs text-secondary" style="margin: 2px 0 0 0;">
+              Running 60-second schedule evaluations for WordPress events, SSL validity checks, and server maintenance
+            </p>
+          </div>
+        </div>
+        <div class="flex items-center gap-2" id="cron-stats-badges">
+          <span class="badge badge-success">Daemon Healthy</span>
+        </div>
+      </div>
+    </div>
+
+    <div id="cron-content">
+      <p class="text-muted">Loading scheduled tasks…</p>
     </div>
   `;
 
-  const data = await api('/cron');
-  const el = document.getElementById('cron-list');
+  const [autoData, crontabData] = await Promise.all([
+    api('/cron/automation'),
+    api('/cron'),
+  ]);
 
-  if (data?.jobs?.length) {
-    el.innerHTML = `
-      <div class="table-wrap"><table class="table">
-        <thead><tr><th>Schedule</th><th>Command</th><th>Actions</th></tr></thead>
-        <tbody>${data.jobs.map((j) => `
-          <tr>
-            <td class="text-mono text-sm">${escapeHTML(j.schedule)}</td>
-            <td class="text-mono text-sm truncate" style="max-width:400px">${escapeHTML(j.command)}</td>
-            <td><button class="btn btn-sm btn-danger" onclick="deleteCron(${j.id})">Delete</button></td>
-          </tr>
-        `).join('')}</tbody>
-      </table></div>
-    `;
+  const contentEl = document.getElementById('cron-content');
+  if (!contentEl) return;
+
+  const tasks = autoData?.tasks || [];
+  const systemTasks = tasks.filter((t) => t.isSystem);
+  const customTasks = tasks.filter((t) => !t.isSystem);
+  const crontabJobs = crontabData?.jobs || [];
+
+  contentEl.innerHTML = `
+    <!-- System Automation Tasks -->
+    <div class="card mb-6">
+      <div class="card-header flex justify-between items-center">
+        <div>
+          <h3 class="card-title">Core System Automation Tasks</h3>
+          <p class="text-xs text-secondary">Essential server-side automation runners managed by the DEOLS service engine</p>
+        </div>
+        <span class="badge badge-info">${systemTasks.length} System Tasks</span>
+      </div>
+      <div class="card-body">
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Task Name & Description</th>
+                <th>Schedule</th>
+                <th>Last Run</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${systemTasks.map((t) => `
+                <tr>
+                  <td>
+                    <strong>${escapeHTML(t.name)}</strong>
+                    <div class="text-xs text-secondary" style="margin-top: 2px;">${escapeHTML(t.description || '')}</div>
+                  </td>
+                  <td>
+                    <span class="badge badge-info text-mono">${escapeHTML(t.schedule)}</span>
+                  </td>
+                  <td class="text-xs">
+                    ${t.lastRun ? `<span>${new Date(t.lastRun).toLocaleTimeString()}</span><div class="text-muted">${t.lastDurationMs}ms</div>` : '<span class="text-muted">Pending</span>'}
+                  </td>
+                  <td>
+                    <span class="badge badge-${t.lastStatus === 'success' ? 'success' : (t.lastStatus === 'failed' ? 'danger' : 'secondary')}">
+                      ${escapeHTML(t.lastStatus || 'idle')}
+                    </span>
+                  </td>
+                  <td>
+                    <div class="flex gap-2">
+                      <button class="btn btn-secondary btn-sm" onclick="triggerRunTask('${escapeHTML(t.id)}')">
+                        ⚡ Run Now
+                      </button>
+                      <button class="btn btn-secondary btn-sm" onclick="showTaskLogsModal('${escapeHTML(t.id)}', '${escapeHTML(t.name)}')">
+                        Logs
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Custom Scheduled Automation Tasks -->
+    <div class="card mb-6">
+      <div class="card-header flex justify-between items-center">
+        <div>
+          <h3 class="card-title">Custom Scheduled Server Tasks</h3>
+          <p class="text-xs text-secondary">Custom bash scripts, python automations, and scheduled maintenance commands</p>
+        </div>
+        <span class="badge badge-primary">${customTasks.length} Custom Tasks</span>
+      </div>
+      <div class="card-body">
+        ${customTasks.length > 0 ? `
+          <div class="table-wrap">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Task Name</th>
+                  <th>Schedule</th>
+                  <th>Command</th>
+                  <th>Last Run</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${customTasks.map((t) => `
+                  <tr>
+                    <td><strong>${escapeHTML(t.name)}</strong></td>
+                    <td><span class="badge badge-info text-mono">${escapeHTML(t.schedule)}</span></td>
+                    <td><code class="text-mono text-xs truncate" style="max-width: 250px; display: inline-block;">${escapeHTML(t.command)}</code></td>
+                    <td class="text-xs">
+                      ${t.lastRun ? `<span>${new Date(t.lastRun).toLocaleTimeString()}</span><div class="text-muted">${t.lastDurationMs}ms</div>` : '<span class="text-muted">Pending</span>'}
+                    </td>
+                    <td>
+                      <span class="badge badge-${t.lastStatus === 'success' ? 'success' : (t.lastStatus === 'failed' ? 'danger' : 'secondary')}">
+                        ${escapeHTML(t.lastStatus || 'idle')}
+                      </span>
+                    </td>
+                    <td>
+                      <div class="flex gap-2">
+                        <button class="btn btn-secondary btn-sm" onclick="triggerRunTask('${escapeHTML(t.id)}')">⚡ Run</button>
+                        <button class="btn btn-secondary btn-sm" onclick="showTaskLogsModal('${escapeHTML(t.id)}', '${escapeHTML(t.name)}')">Logs</button>
+                        <button class="btn btn-danger btn-sm" onclick="deleteAutomationTask('${escapeHTML(t.id)}')">Delete</button>
+                      </div>
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        ` : `
+          <div class="empty-state py-4">
+            <p class="text-muted">No custom scheduled tasks configured yet. Click <strong>+ Add Automation Task</strong> to create one.</p>
+          </div>
+        `}
+      </div>
+    </div>
+
+    <!-- Traditional Crontab (crontab -l) -->
+    <div class="card">
+      <div class="card-header flex justify-between items-center">
+        <div>
+          <h3 class="card-title">System Crontab (/etc/crontab)</h3>
+          <p class="text-xs text-secondary">Direct user crontab entries managed by cron daemon</p>
+        </div>
+        <span class="badge badge-secondary">${crontabJobs.length} Crontab Lines</span>
+      </div>
+      <div class="card-body">
+        ${crontabJobs.length > 0 ? `
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th>Schedule</th><th>Command</th><th>Actions</th></tr></thead>
+              <tbody>
+                ${crontabJobs.map((j) => `
+                  <tr>
+                    <td class="text-mono text-sm">${escapeHTML(j.schedule)}</td>
+                    <td class="text-mono text-sm truncate" style="max-width:400px">${escapeHTML(j.command)}</td>
+                    <td><button class="btn btn-sm btn-danger" onclick="deleteCron(${j.id})">Delete</button></td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        ` : `
+          <div class="empty-state py-4"><p class="text-muted">No raw crontab lines active for user root.</p></div>
+        `}
+      </div>
+    </div>
+  `;
+}
+
+// ─── Trigger Task Run Immediately ───────────────────────────
+
+async function triggerRunTask(taskId) {
+  toast(`Executing automation task ${taskId}…`, 'info');
+  const res = await api(`/cron/automation/${encodeURIComponent(taskId)}/run`, { method: 'POST' });
+
+  if (res?.success) {
+    const result = res.result;
+    showModal(
+      `Execution Result: ${taskId}`,
+      `
+        <div style="margin-bottom: 12px;">
+          <div class="flex justify-between items-center mb-2">
+            <span>Status: <strong class="badge badge-${result.status === 'success' ? 'success' : 'danger'}">${result.status.toUpperCase()}</strong></span>
+            <span class="text-xs text-muted">Execution Duration: <strong>${result.durationMs}ms</strong></span>
+          </div>
+          <span class="text-xs text-muted">Triggered at: ${new Date(result.timestamp).toLocaleString()}</span>
+        </div>
+        <div>
+          <label style="font-size: 12px; font-weight: 600; color: var(--accent-light, #818cf8);">Task Output Console:</label>
+          <pre style="background: rgba(0,0,0,0.6); padding: 12px; border-radius: 6px; font-size: 12px; max-height: 280px; overflow: auto; color: #38bdf8; margin-top: 6px;"><code>${escapeHTML(result.output || 'Task executed with empty output')}</code></pre>
+        </div>
+      `,
+      `<button class="btn btn-secondary" onclick="closeModal()">Close</button>`
+    );
+    // Refresh page state
+    const container = document.getElementById('main-content');
+    if (container) renderCron(container);
   } else {
-    el.innerHTML = '<div class="empty-state"><h3>No Cron Jobs</h3><p>Add scheduled tasks for your sites</p></div>';
+    toast(res?.error || 'Failed to execute task', 'error');
   }
 }
 
+// ─── View Task Logs Modal ───────────────────────────────────
+
+async function showTaskLogsModal(taskId, taskName) {
+  toast('Loading task history logs…', 'info');
+  const res = await api(`/cron/automation/${encodeURIComponent(taskId)}/logs`);
+  showModal(
+    `Logs: ${taskName}`,
+    `
+      <div style="margin-bottom: 10px;">
+        <span class="text-xs text-muted">Recent execution history and output for <strong>${escapeHTML(taskId)}</strong>:</span>
+      </div>
+      <pre style="background: rgba(0,0,0,0.6); padding: 12px; border-radius: 6px; font-size: 11px; max-height: 340px; overflow: auto; color: #e2e8f0; font-family: monospace;"><code>${escapeHTML(res?.logs || 'No logs available')}</code></pre>
+    `,
+    `<button class="btn btn-secondary" onclick="closeModal()">Close</button>`
+  );
+}
+
+// ─── Add Custom Automation Modal ────────────────────────────
+
+function showNewAutomationModal() {
+  showModal(
+    'New Server-Side Automation Task',
+    `
+      <div class="flex flex-col gap-4">
+        <div class="form-group">
+          <label for="auto-task-name">Task Name</label>
+          <input type="text" id="auto-task-name" placeholder="e.g. Daily Database Dump or Sync Assets" required>
+        </div>
+        <div class="form-group">
+          <label for="auto-task-schedule">Cron Schedule</label>
+          <input type="text" id="auto-task-schedule" placeholder="*/15 * * * *" value="*/15 * * * *" required>
+          <div class="flex gap-2 mt-2">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('auto-task-schedule').value='*/5 * * * *'">Every 5m</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('auto-task-schedule').value='*/15 * * * *'">Every 15m</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('auto-task-schedule').value='0 * * * *'">Hourly</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('auto-task-schedule').value='0 2 * * *'">Daily 2am</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="auto-task-cmd">Shell / CLI Command</label>
+          <input type="text" id="auto-task-cmd" placeholder="e.g. /usr/bin/python3 /opt/deols/scripts/backup.py" required>
+          <span class="form-hint">Command will be executed server-side under root/service context</span>
+        </div>
+      </div>
+    `,
+    `
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitNewAutomationTask()">Create Automation Task</button>
+    `
+  );
+}
+
+async function submitNewAutomationTask() {
+  const name = document.getElementById('auto-task-name')?.value;
+  const schedule = document.getElementById('auto-task-schedule')?.value;
+  const command = document.getElementById('auto-task-cmd')?.value;
+
+  if (!name || !schedule || !command) {
+    toast('Please fill all required fields', 'error');
+    return;
+  }
+
+  const res = await api('/cron/automation', {
+    method: 'POST',
+    body: { name, schedule, command },
+  });
+
+  if (res?.success) {
+    toast(`Automation task "${name}" created!`, 'success');
+    closeModal();
+    const container = document.getElementById('main-content');
+    if (container) renderCron(container);
+  } else {
+    toast(res?.error || 'Failed to create automation task', 'error');
+  }
+}
+
+async function deleteAutomationTask(taskId) {
+  if (!confirm(`Are you sure you want to delete automation task ${taskId}?`)) return;
+  const res = await api(`/cron/automation/${encodeURIComponent(taskId)}`, { method: 'DELETE' });
+  if (res?.success) {
+    toast('Task removed', 'success');
+    const container = document.getElementById('main-content');
+    if (container) renderCron(container);
+  } else {
+    toast(res?.error || 'Failed to delete task', 'error');
+  }
+}
+
+// ─── Standard Crontab Handlers ──────────────────────────────
+
 function showNewCronModal() {
-  showModal('New Cron Job', `
+  showModal('New Standard Crontab Line', `
     <div class="flex flex-col gap-4">
       <div class="form-group">
         <label>Schedule (cron format)</label>
@@ -1092,14 +2757,14 @@ async function addCron() {
   const schedule = document.getElementById('cron-schedule').value;
   const command = document.getElementById('cron-command').value;
   const result = await api('/cron', { method: 'POST', body: { schedule, command } });
-  if (result?.success) { toast('Cron job added', 'success'); closeModal(); navigateTo('cron'); }
+  if (result?.success) { toast('Cron job added', 'success'); closeModal(); const c = document.getElementById('main-content'); if (c) renderCron(c); }
   else toast(result?.error || 'Failed', 'error');
 }
 
 async function deleteCron(index) {
   if (!confirm('Delete this cron job?')) return;
   const result = await api(`/cron/${index}`, { method: 'DELETE' });
-  if (result?.success) { toast('Cron job deleted', 'success'); navigateTo('cron'); }
+  if (result?.success) { toast('Cron job deleted', 'success'); const c = document.getElementById('main-content'); if (c) renderCron(c); }
   else toast(result?.error || 'Failed', 'error');
 }
 
@@ -1534,6 +3199,12 @@ window.createDb = createDb;
 window.dropDb = dropDb;
 window.dropDbUser = dropDbUser;
 window.showIssueSSLModal = showIssueSSLModal;
+window.switchSSLTab = switchSSLTab;
+window.toggleCFAuthFields = toggleCFAuthFields;
+window.testCloudflareConnection = testCloudflareConnection;
+window.handleIssueSSLSubmit = handleIssueSSLSubmit;
+window.issueWildcardSSL = issueWildcardSSL;
+window.renderSSLErrorFallback = renderSSLErrorFallback;
 window.issueSSL = issueSSL;
 window.renewAllSSL = renewAllSSL;
 window.revokeSSL = revokeSSL;
@@ -1545,6 +3216,7 @@ window.showUploadModal = showUploadModal;
 window.showNewFolderModal = showNewFolderModal;
 window.createFolder = createFolder;
 window.svcAction = svcAction;
+window.renderOLS = renderOLS;
 window.redisAction = redisAction;
 window.flushRedis = flushRedis;
 window.memcachedAction = memcachedAction;
@@ -1571,6 +3243,25 @@ window.fwDisable = fwDisable;
 window.toggleAntiAttack = toggleAntiAttack;
 window.hardenServer = hardenServer;
 window.setupWPFail2ban = setupWPFail2ban;
+window.restartOLSHeader = restartOLSHeader;
+window.switchServicesTab = switchServicesTab;
+window.triggerDaemonReload = triggerDaemonReload;
+window.loadCustomServicesManager = loadCustomServicesManager;
+window.selectCustomService = selectCustomService;
+window.copyNanoCmd = copyNanoCmd;
+window.createNewCustomServiceUI = createNewCustomServiceUI;
+window.applyServiceTemplate = applyServiceTemplate;
+window.saveCustomService = saveCustomService;
+window.customServiceAction = customServiceAction;
+window.deleteCustomService = deleteCustomService;
+window.setCustomServiceInspection = setCustomServiceInspection;
+window.refreshInspectionPanel = refreshInspectionPanel;
+window.loadCoreServicesList = loadCoreServicesList;
+window.showTimezoneModal = showTimezoneModal;
+window.saveServerTimezone = saveServerTimezone;
+window.noticeRestartOLS = noticeRestartOLS;
+window.noticeReloadServer = noticeReloadServer;
+window.initServerClock = initServerClock;
 
 // ─── Initialize ─────────────────────────────────────────────
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────
 # DEOLS — One-Line Installer for Debian 12 (Bookworm)
-# Usage: curl -sSL https://raw.githubusercontent.com/deols/deols/main/install.sh | bash
+# Usage: curl -sSL https://raw.githubusercontent.com/mimi566/DEOLS/main/install.sh | bash
 # ─────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -58,7 +58,7 @@ apt-get install -y -qq \
   software-properties-common git unzip zip tar \
   ufw fail2ban \
   build-essential python3 python3-venv python3-pip \
-  certbot
+  certbot python3-certbot-dns-cloudflare
 
 # ─── Install Node.js ────────────────────────────────────
 
@@ -131,7 +131,7 @@ else
   if [[ -f "./package.json" ]] && grep -q '"deols"' ./package.json 2>/dev/null; then
     cp -r . "$DEOLS_DIR"
   else
-    git clone https://github.com/deols/deols.git "$DEOLS_DIR"
+    git clone https://github.com/mimi566/DEOLS.git "$DEOLS_DIR"
   fi
 fi
 
@@ -162,8 +162,13 @@ echo -e "${GREEN}✓ DEOLS Panel installed${NC}"
 
 echo -e "${CYAN}[8/8] Configuring systemd service & firewall…${NC}"
 
-# Install systemd service
+# Install systemd services
 cp "$DEOLS_DIR/systemd/deols.service" /etc/systemd/system/deols.service
+if [[ -f "$DEOLS_DIR/systemd/deols-cron.service" ]]; then
+  cp "$DEOLS_DIR/systemd/deols-cron.service" /etc/systemd/system/deols-cron.service
+  systemctl enable deols-cron 2>/dev/null || true
+  systemctl start deols-cron 2>/dev/null || true
+fi
 systemctl daemon-reload
 systemctl enable deols
 systemctl start deols
@@ -180,12 +185,23 @@ echo "y" | ufw enable
 
 # Configure Fail2ban
 systemctl enable fail2ban
-systemctl start fail2ban
-
 # Create web root directory
 mkdir -p /var/www
 
+# Symlink deols CLI utility globally
+chmod +x "$DEOLS_DIR/bin/deols-cli.js" "$DEOLS_DIR/bin/deols-automation.js" 2>/dev/null || true
+ln -sf "$DEOLS_DIR/bin/deols-cli.js" /usr/local/bin/deols
+
+# Generate initial secure credentials via Root SSH
+echo -e "${CYAN}Generating secure root admin credentials…${NC}"
+ADMIN_PASS=$(node -e "const b=crypto.randomBytes(9).toString('base64').replace(/[^a-zA-Z0-9]/g,'X').slice(0,12)+'!9';console.log(b)")
+node "$DEOLS_DIR/bin/deols-cli.js" admin setpass "$ADMIN_PASS" >/dev/null 2>&1 || true
+
+OLS_PASS=$(node -e "const b=crypto.randomBytes(9).toString('base64').replace(/[^a-zA-Z0-9]/g,'X').slice(0,12)+'!9';console.log(b)")
+node "$DEOLS_DIR/bin/deols-cli.js" ols password "$OLS_PASS" >/dev/null 2>&1 || true
+
 echo -e "${GREEN}✓ Firewall and services configured${NC}"
+echo -e "${GREEN}✓ CLI command 'deols' installed to /usr/local/bin/deols${NC}"
 
 # ─── Summary ────────────────────────────────────────────
 
@@ -193,27 +209,27 @@ SERVER_IP=$(hostname -I | awk '{print $1}')
 
 echo ""
 echo -e "${GREEN}${BOLD}"
-echo "╔══════════════════════════════════════════════════════╗"
-echo "║   ✅  DEOLS Installation Complete!                  ║"
-echo "╠══════════════════════════════════════════════════════╣"
-echo "║                                                      ║"
-echo "║   Panel URL:  https://${SERVER_IP}:${DEOLS_PORT}     ║"
-echo "║                                                      ║"
-echo "║   On first visit, you will be prompted to create     ║"
-echo "║   your admin account.                                ║"
-echo "║                                                      ║"
-echo "║   OLS Admin:  https://${SERVER_IP}:7080              ║"
-echo "║                                                      ║"
-echo "╠══════════════════════════════════════════════════════╣"
-echo "║   Installed:                                         ║"
-echo "║   • OpenLiteSpeed + LSPHP 8.3                       ║"
-echo "║   • MariaDB Server                                  ║"
-echo "║   • Node.js $(node -v)                              ║"
-echo "║   • WP-CLI                                          ║"
-echo "║   • Certbot (Let's Encrypt)                         ║"
-echo "║   • UFW Firewall (enabled)                          ║"
-echo "║   • Fail2ban (active)                               ║"
-echo "╚══════════════════════════════════════════════════════╝"
+echo "╔══════════════════════════════════════════════════════════════╗"
+echo "║          ✅  DEOLS Installation Complete!                    ║"
+echo "╠══════════════════════════════════════════════════════════════╣"
+echo "║                                                              ║"
+echo "║   DEOLS Panel:  https://${SERVER_IP}:${DEOLS_PORT}               ║"
+echo "║   Username:     admin                                        ║"
+echo "║   Password:     ${ADMIN_PASS}                         ║"
+echo "║                                                              ║"
+echo "║   OLS WebAdmin: https://${SERVER_IP}:7080                    ║"
+echo "║   Username:     admin                                        ║"
+echo "║   Password:     ${OLS_PASS}                         ║"
+echo "║                                                              ║"
+echo "╠══════════════════════════════════════════════════════════════╣"
+echo "║   SECURITY NOTICE (Root SSH Only):                           ║"
+echo "║   Web-based password reset is disabled for safety.           ║"
+echo "║   • Reset Panel Password: deols admin reset                  ║"
+echo "║   • Set Panel Password:   deols admin setpass <password>     ║"
+echo "║   • Reset OLS Password:   deols ols reset-pass               ║"
+echo "║   • Check System Status:  deols status                       ║"
+echo "╚══════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
-echo -e "Manage: ${CYAN}systemctl {start|stop|restart|status} deols${NC}"
+echo -e "Service Control: ${CYAN}systemctl {start|stop|restart|status} deols${NC}"
+echo -e "CLI Manual:      ${CYAN}deols help${NC}"
 echo ""

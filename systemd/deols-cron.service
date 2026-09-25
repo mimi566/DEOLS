@@ -1,0 +1,20 @@
+[Unit]
+Description=DEOLS Server-Side Automation & Cron Service
+After=network.target deols.service lsws.service mariadb.service
+Wants=deols.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/deols
+ExecStart=/usr/bin/node /opt/deols/bin/deols-automation.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=deols-cron
+Environment=NODE_ENV=production
+Environment=DEOLS_DATA_DIR=/opt/deols/data
+
+[Install]
+WantedBy=multi-user.target

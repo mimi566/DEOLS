@@ -56,6 +56,7 @@ export const config = {
   vhostsDir: process.env.OLS_VHOSTS_DIR || '/usr/local/lsws/conf/vhosts',
   webRoot: process.env.WEB_ROOT || '/var/www',
   cacheDir: process.env.OLS_CACHE_DIR || '/usr/local/lsws/cachedata',
+  systemdDir: process.env.SYSTEMD_DIR || (process.platform === 'linux' ? '/etc/systemd/system' : join(DATA_DIR, 'systemd')),
 
   // Database
   db: {

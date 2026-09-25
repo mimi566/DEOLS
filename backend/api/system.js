@@ -2,6 +2,9 @@
 // DEOLS System API — Server Metrics & System Information
 // ─────────────────────────────────────────────────────────────
 
+import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { config } from '../config.js';
 import { shell } from '../utils/shell.js';
 
 export default async function systemRoutes(app) {
@@ -123,5 +126,109 @@ export default async function systemRoutes(app) {
     // Schedule reboot in 5 seconds to allow response
     shell('shutdown -r +0 "DEOLS Panel initiated reboot"');
     return { success: true, message: 'Server rebooting in 5 seconds' };
+  });
+
+  // ─── Get Server Timezone & Clock ───────────────────────
+  app.get('/timezone', async () => {
+    let timezone = 'UTC';
+    try {
+      if (existsSync('/etc/timezone')) {
+        const content = readFileSync('/etc/timezone', 'utf-8').trim();
+        if (content) timezone = content;
+      } else {
+        const res = await shell('timedatectl show -p Timezone --value 2>/dev/null');
+        if (res.code === 0 && res.stdout.trim()) {
+          timezone = res.stdout.trim();
+        } else {
+          timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+        }
+      }
+    } catch {
+      timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    }
+
+    const now = new Date();
+    let formatted = '';
+    try {
+      formatted = new Intl.DateTimeFormat('en-US', {
+        timeZone: timezone,
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      }).format(now);
+    } catch {
+      formatted = now.toISOString();
+    }
+
+    return {
+      timezone,
+      currentTime: now.toISOString(),
+      formatted,
+      timestamp: now.getTime(),
+    };
+  });
+
+  // ─── Set Server Timezone ───────────────────────────────
+  app.post('/timezone', async (request, reply) => {
+    const { timezone } = request.body || {};
+    if (!timezone || typeof timezone !== 'string') {
+      return reply.code(400).send({ error: 'Timezone string is required (e.g. UTC, Asia/Kolkata)' });
+    }
+
+    const cleanTz = timezone.trim();
+    // Validate IANA timezone
+    try {
+      Intl.DateTimeFormat(undefined, { timeZone: cleanTz });
+    } catch {
+      return reply.code(400).send({ error: `Invalid timezone identifier: '${cleanTz}'` });
+    }
+
+    let details = '';
+    // Apply via timedatectl (standard systemd)
+    const timedateRes = await shell(`timedatectl set-timezone "${cleanTz}" 2>&1`);
+    if (timedateRes.code === 0) {
+      details = 'Applied via timedatectl set-timezone';
+    } else {
+      // Fallback for containers or systems without active systemd-timedated
+      const linkRes = await shell(`ln -sf "/usr/share/zoneinfo/${cleanTz}" /etc/localtime 2>/dev/null && echo "${cleanTz}" > /etc/timezone 2>/dev/null || true`);
+      details = linkRes.code === 0 ? 'Applied via /etc/localtime symlink' : `Runtime timezone configured: ${cleanTz}`;
+    }
+
+    // Persist to DEOLS settings
+    try {
+      const settingsPath = join(config.dataDir, 'settings.json');
+      let settings = {};
+      if (existsSync(settingsPath)) {
+        try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')); } catch {}
+      }
+      settings.timezone = cleanTz;
+      settings.updatedAt = new Date().toISOString();
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2), { mode: 0o600 });
+    } catch {}
+
+    return {
+      success: true,
+      message: `Server timezone successfully updated to ${cleanTz}`,
+      timezone: cleanTz,
+      details,
+      requiresRestart: true,
+    };
+  });
+
+  // ─── Reload Server / Panel Daemon ─────────────────────
+  app.post('/reload', async (request, reply) => {
+    setTimeout(async () => {
+      await shell('systemctl reload-or-restart deols 2>/dev/null || systemctl restart deols 2>/dev/null || true');
+    }, 500);
+
+    return {
+      success: true,
+      message: 'Server daemon reload signal dispatched successfully',
+      timestamp: new Date().toISOString(),
+    };
   });
 }

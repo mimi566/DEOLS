@@ -851,6 +851,121 @@ textarea {
   50% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
 }
 
+/* ─── Header OLS Server Restart Button ────────────────────── */
+
+.header-ols-restart-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.header-ols-restart-btn:hover:not(:disabled) {
+  background: var(--bg-elevated);
+  border-color: var(--accent-primary);
+  color: var(--accent-primary-hover);
+  box-shadow: 0 0 14px rgba(99, 102, 241, 0.25);
+  transform: translateY(-1px);
+}
+
+.header-ols-restart-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.header-ols-restart-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.header-ols-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--accent-primary);
+  transition: transform var(--transition-base);
+}
+
+.header-ols-restart-btn:hover:not(:disabled) .header-ols-icon {
+  color: var(--accent-primary-hover);
+  transform: rotate(45deg);
+}
+
+.header-ols-restart-btn.restarting .header-ols-icon {
+  animation: ols-spin 0.85s linear infinite;
+  color: var(--warning);
+}
+
+@keyframes ols-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* ─── Header Server Timezone Button ──────────────────────── */
+
+.header-tz-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.header-tz-btn:hover {
+  background: var(--bg-elevated);
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 12px rgba(99, 102, 241, 0.2);
+  transform: translateY(-1px);
+}
+
+.header-tz-icon {
+  width: 14px;
+  height: 14px;
+  color: #38bdf8;
+  flex-shrink: 0;
+}
+
+.header-tz-badge {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pulsing-attention {
+  animation: pulse-attention 1.5s ease-in-out infinite !important;
+}
+
+@keyframes pulse-attention {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.5); }
+  50% { box-shadow: 0 0 0 8px rgba(245, 158, 11, 0); }
+}
+
 .content-body {
   flex: 1;
   overflow-y: auto;
@@ -1291,6 +1406,120 @@ code, .code {
   border-radius: var(--radius-sm);
 }
 
+/* ─── Custom Service Unit Editor & Nano Styling ─────────────── */
+
+.nano-editor-container {
+  background: #0d1117;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-secondary);
+  overflow: hidden;
+  box-shadow: var(--shadow-lg);
+  margin-bottom: var(--space-5);
+}
+
+.nano-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: rgba(0, 0, 0, 0.45);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.nano-editor-title {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: #58a6ff;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.nano-textarea {
+  width: 100%;
+  min-height: 280px;
+  height: 330px;
+  background: #090d13;
+  color: #e6edf3;
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  line-height: 1.6;
+  padding: 16px;
+  border: none;
+  outline: none;
+  resize: vertical;
+  tab-size: 4;
+  box-sizing: border-box;
+}
+
+.nano-textarea:focus {
+  background: #0b0f17;
+}
+
+.nano-editor-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: rgba(0, 0, 0, 0.5);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.nano-shortcut-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  margin-right: 6px;
+}
+
+.nano-shortcut-badge strong {
+  color: var(--accent-primary-hover);
+}
+
+.status-terminal-box {
+  background: #090d13;
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: #38bdf8;
+  max-height: 260px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.service-badge-active {
+  background: rgba(16, 185, 129, 0.15) !important;
+  color: #10b981 !important;
+  border: 1px solid rgba(16, 185, 129, 0.3) !important;
+}
+
+.service-badge-failed {
+  background: rgba(239, 68, 68, 0.15) !important;
+  color: #ef4444 !important;
+  border: 1px solid rgba(239, 68, 68, 0.3) !important;
+}
+
+.service-badge-inactive {
+  background: rgba(148, 163, 184, 0.15) !important;
+  color: #94a3b8 !important;
+  border: 1px solid rgba(148, 163, 184, 0.3) !important;
+}
+
 /* ─── File Manager ────────────────────────────────────────── */
 
 .breadcrumb {
@@ -1567,6 +1796,22 @@ code, .code {
 
   .header-stats {
     display: none;
+  }
+
+  .header-ols-text {
+    display: none;
+  }
+
+  .header-ols-restart-btn {
+    padding: 6px 8px;
+  }
+
+  #header-server-time {
+    display: none;
+  }
+
+  .header-tz-btn {
+    padding: 6px 8px;
   }
 
   .stats-grid {

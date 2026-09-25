@@ -6,6 +6,12 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { config } from '../config.js';
 import { shell, run, sanitizeDomain, isValidDomain } from '../utils/shell.js';
+import {
+  ensureOlsListeners,
+  addVirtualHostToOls,
+  removeVirtualHostFromOls,
+  generateCyberpanelVhConf,
+} from '../utils/ols-config.js';
 
 const SITES_FILE = join(config.dataDir, 'sites.json');
 
@@ -133,17 +139,20 @@ export default async function sitesRoutes(app) {
       await shell(`find ${docRoot} -type d -exec chmod 755 {} \\;`);
       await shell(`find ${docRoot} -type f -exec chmod 644 {} \\;`);
 
-      // 7. Generate OLS Virtual Host config
+      // 7. Ensure OLS dual listeners (Default :80 and DefaultHTTPS :443) exist
+      ensureOlsListeners();
+
+      // 8. Generate CyberPanel-compatible OLS Virtual Host config with isolated PHP socket
       const vhostConfDir = join(config.vhostsDir, cleanDomain);
       mkdirSync(vhostConfDir, { recursive: true });
 
-      const vhconfContent = generateVhostConfig(cleanDomain, docRoot, logsDir, phpVersion, enableWildcard);
+      const vhconfContent = generateCyberpanelVhConf(cleanDomain, docRoot, logsDir, phpVersion, enableWildcard);
       writeFileSync(join(vhostConfDir, 'vhconf.conf'), vhconfContent);
 
-      // 8. Add vhost to OLS httpd_config
-      await addVhostToHttpdConfig(cleanDomain, enableWildcard);
+      // 9. Add Virtual Host to OLS and map to both port 80 and port 443 listeners
+      addVirtualHostToOls(cleanDomain, enableWildcard);
 
-      // 9. Graceful restart OLS
+      // 10. Graceful restart OLS
       await run(config.bin.lswsctrl, ['restart']);
 
       // 10. Save site record
@@ -197,9 +206,10 @@ export default async function sitesRoutes(app) {
     const site = sites[idx];
 
     try {
-      // Remove OLS vhost config
+      // Remove OLS vhost config directory
       await shell(`rm -rf ${join(config.vhostsDir, domain)}`);
-      await removeVhostFromHttpdConfig(domain);
+      // Unmap from all OLS listeners and remove virtual host definition from httpd_config.conf
+      removeVirtualHostFromOls(domain);
 
       // Optionally remove files
       if (removeFiles) {
@@ -258,142 +268,3 @@ export default async function sitesRoutes(app) {
   });
 }
 
-// ─── VHost Config Generator ────────────────────────────────
-
-function generateVhostConfig(domain, docRoot, logsDir, phpVersion, enableWildcard) {
-  const phpSuffix = phpVersion || '83';
-  const wildcardDirective = enableWildcard
-    ? `
-member *.${domain} {
-  vhDomain *.${domain}
-}`
-    : '';
-
-  return `
-docRoot                   ${docRoot}
-vhDomain                  ${domain}
-vhAliases                 www.${domain}${enableWildcard ? ', *.' + domain : ''}
-adminEmails               admin@${domain}
-enableGzip                1
-enableBr                  1
-
-index {
-  useServer               0
-  indexFiles               index.php, index.html
-}
-
-errorlog ${logsDir}/error.log {
-  useServer               0
-  logLevel                WARN
-  rollingSize             10M
-}
-
-accesslog ${logsDir}/access.log {
-  useServer               0
-  logFormat               "%h %l %u %t \\"%r\\" %>s %b"
-  rollingSize             10M
-  keepDays                30
-}
-
-scripthandler {
-  add                     lsapi:lsphp${phpSuffix} php
-}
-
-extprocessor lsphp${phpSuffix} {
-  type                    lsapi
-  address                 uds://tmp/lshttpd/lsphp${phpSuffix}.sock
-  maxConns                10
-  env                     PHP_LSAPI_CHILDREN=10
-  initTimeout             60
-  retryTimeout            0
-  pcKeepAliveTimeout      60
-  respBuffer              0
-  autoStart               2
-  path                    /usr/local/lsws/lsphp${phpSuffix}/bin/lsphp
-  backlog                 100
-  instances               1
-  priority                0
-  memSoftLimit            2047M
-  memHardLimit            2047M
-  procSoftLimit           1400
-  procHardLimit           1500
-}
-
-rewrite {
-  enable                  1
-  autoLoadHtaccess        1
-  rules <<<END_rules
-RewriteEngine On
-RewriteRule .* - [E=Cache-Control:no-autoflush]
-RewriteRule ^/wp-content/cache/ - [L]
-RewriteCond %{REQUEST_FILENAME} !-f
-RewriteCond %{REQUEST_FILENAME} !-d
-RewriteRule . /index.php [L]
-END_rules
-}
-
-context / {
-  location                ${docRoot}
-  allowBrowse             1
-  extraHeaders            <<<END_extraHeaders
-    X-Frame-Options SAMEORIGIN
-    X-Content-Type-Options nosniff
-    X-XSS-Protection 1;mode=block
-    Referrer-Policy strict-origin-when-cross-origin
-END_extraHeaders
-}
-
-${wildcardDirective}
-`;
-}
-
-// ─── OLS httpd_config.conf helpers ─────────────────────────
-
-async function addVhostToHttpdConfig(domain, enableWildcard) {
-  const httpdConf = join(config.olsRoot, 'conf', 'httpd_config.conf');
-  let content = readFileSync(httpdConf, 'utf-8');
-
-  const vhostEntry = `
-virtualhost ${domain} {
-  vhRoot                  /var/www/${domain}
-  configFile              ${config.vhostsDir}/${domain}/vhconf.conf
-  allowSymbolLink         1
-  enableScript            1
-  restrained              1
-}
-`;
-
-  const listenerMapping = `  map                     ${domain} ${domain}${enableWildcard ? ', *.' + domain : ', www.' + domain}`;
-
-  // Append vhost definition
-  content += vhostEntry;
-
-  // Add to listener mapping (find the Default SSL listener block)
-  content = content.replace(
-    /(listener\s+Default\s*\{[^}]*)(})/s,
-    `$1${listenerMapping}\n$2`
-  );
-
-  writeFileSync(httpdConf, content);
-}
-
-async function removeVhostFromHttpdConfig(domain) {
-  const httpdConf = join(config.olsRoot, 'conf', 'httpd_config.conf');
-  let content = readFileSync(httpdConf, 'utf-8');
-
-  // Remove vhost block
-  const vhostRegex = new RegExp(
-    `\\n?virtualhost\\s+${domain.replace(/\./g, '\\.')}\\s*\\{[^}]*\\}`,
-    'g'
-  );
-  content = content.replace(vhostRegex, '');
-
-  // Remove listener mapping
-  const mapRegex = new RegExp(
-    `\\n?\\s*map\\s+${domain.replace(/\./g, '\\.')}\\s+[^\\n]*`,
-    'g'
-  );
-  content = content.replace(mapRegex, '');
-
-  writeFileSync(httpdConf, content);
-}

@@ -35,6 +35,9 @@ import pythonRoutes from './api/python.js';
 import securityRoutes from './api/security.js';
 import olsRoutes from './api/ols.js';
 
+// Background Server-Side Automation Daemon
+import { startAutomationDaemon, stopAutomationDaemon } from './services/automation.js';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PANEL_VERSION = '1.0.0';
 
@@ -172,6 +175,10 @@ async function bootstrap() {
       `║   → https://${config.host}:${config.port}                 ║\n` +
       `╚══════════════════════════════════════════════╝`
     );
+
+    // Initialize and start server-side automation & cron engine
+    startAutomationDaemon();
+    app.log.info('✓ Server-side automation daemon started (WP-Cron, SSL renewal, OLS maintenance)');
   } catch (err) {
     app.log.fatal(err);
     process.exit(1);
@@ -180,6 +187,7 @@ async function bootstrap() {
   // Graceful shutdown
   const shutdown = async (signal) => {
     app.log.info(`Received ${signal}. Shutting down gracefully…`);
+    stopAutomationDaemon();
     await app.close();
     process.exit(0);
   };

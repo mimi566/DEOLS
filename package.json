@@ -10,7 +10,8 @@
   "scripts": {
     "start": "node backend/index.js",
     "dev": "node --watch backend/index.js",
-    "build:frontend": "node frontend/build.js"
+    "build:frontend": "node frontend/build.js",
+    "test:pipeline": "node scripts/test-pipeline.js"
   },
   "keywords": [
     "openlitespeed",
