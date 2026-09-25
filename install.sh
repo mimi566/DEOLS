@@ -71,23 +71,16 @@ echo -e "${GREEN}✓ Node.js $(node -v) installed${NC}"
 
 # ─── Install OpenLiteSpeed ───────────────────────────────
 
-echo -e "${CYAN}[4/8] Installing OpenLiteSpeed + LSPHP…${NC}"
+echo -e "${CYAN}[4/8] Installing OpenLiteSpeed + LSPHP 8.3 & 8.2…${NC}"
 if ! command -v /usr/local/lsws/bin/lswsctrl &>/dev/null; then
   wget -qO - https://repo.litespeed.sh | bash
   apt-get update -qq
-  apt-get install -y -qq openlitespeed lsphp83 lsphp83-common \
-    lsphp83-mysql lsphp83-curl lsphp83-opcache
+  apt-get install -y -qq openlitespeed \
+    lsphp83 lsphp83-common lsphp83-mysql lsphp83-opcache lsphp83-curl lsphp83-imagick lsphp83-redis lsphp83-memcached \
+    lsphp82 lsphp82-common lsphp82-mysql lsphp82-opcache lsphp82-curl lsphp82-imagick lsphp82-redis lsphp82-memcached 2>/dev/null || \
+  apt-get install -y openlitespeed \
+    lsphp83 lsphp83-common lsphp83-mysql lsphp83-opcache lsphp83-curl lsphp83-imagick lsphp83-redis lsphp83-memcached
 fi
-
-# Install LSPHP extensions safely (skip non-existent ones such as json/ioncube in PHP 8.x)
-for pkg in lsphp83-intl lsphp83-imagick lsphp83-redis lsphp83-memcached lsphp83-imap; do
-  apt-get install -y -qq "$pkg" 2>/dev/null || true
-done
-
-# Install LSPHP 8.2 support
-for pkg in lsphp82 lsphp82-common lsphp82-mysql lsphp82-curl lsphp82-opcache lsphp82-intl lsphp82-imagick lsphp82-redis; do
-  apt-get install -y -qq "$pkg" 2>/dev/null || true
-done
 
 # Set up standard symlinks
 if [[ -f /usr/local/lsws/lsphp83/bin/lsphp ]]; then
