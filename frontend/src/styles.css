@@ -2144,3 +2144,14 @@ code, .code {
   flex-shrink: 0;
 }
 
+/* SSH Diagnostic Helper */
+.ssh-diag-grid {
+  grid-template-columns: 1fr 1fr;
+}
+
+@media (max-width: 600px) {
+  .ssh-diag-grid {
+    grid-template-columns: 1fr;
+  }
+}
+

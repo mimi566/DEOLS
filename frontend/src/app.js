@@ -4690,6 +4690,79 @@ function renderAutoTunerContent(container) {
       </div>
     </div>
 
+    <!-- Terminal Diagnostic Helper: SSH Guide Box -->
+    <div class="card mb-6" id="ssh-diag-card">
+      <div class="card-header" style="cursor:pointer;user-select:none;" onclick="(function(){var b=document.getElementById('ssh-diag-body');var a=document.getElementById('ssh-diag-arrow');b.style.display=b.style.display==='none'?'block':'none';a.style.transform=b.style.display==='none'?'rotate(0deg)':'rotate(180deg)';})()" title="Expand / Collapse">
+        <div class="flex items-center justify-between" style="width:100%;">
+          <div class="flex items-center gap-3">
+            <svg style="width:18px;height:18px;color:#38bdf8;flex-shrink:0;" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M2 5a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm3.293 1.293a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 01-1.414-1.414L7.586 10 5.293 7.707a1 1 0 010-1.414zM11 12a1 1 0 100 2h3a1 1 0 100-2h-3z"/>
+            </svg>
+            <h3 class="card-title" style="margin:0;">🔍 How to Check Your Exact VPS Hardware Over SSH</h3>
+            <span class="badge" style="background:rgba(56,189,248,0.12);color:#38bdf8;font-size:11px;padding:3px 8px;">Diagnostic Helper</span>
+          </div>
+          <svg id="ssh-diag-arrow" style="width:18px;height:18px;color:var(--text-secondary);transition:transform 0.2s ease;transform:rotate(180deg);" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z"/>
+          </svg>
+        </div>
+      </div>
+      <div id="ssh-diag-body" class="card-body">
+        <p class="text-muted text-sm mb-4" style="line-height:1.6;">
+          The Auto-Tuner reads hardware specs automatically. To <strong>verify the exact values</strong> your VPS reports (or if you prefer manual input), run this single command in your SSH terminal:
+        </p>
+
+        <!-- Single copy-paste diagnostic command -->
+        <div style="background:var(--bg-code,#0f172a);border:1px solid var(--border-primary);border-radius:8px;overflow:hidden;margin-bottom:20px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid rgba(255,255,255,0.06);background:rgba(255,255,255,0.03);">
+            <span style="font-size:11px;font-weight:600;color:#64748b;letter-spacing:0.5px;text-transform:uppercase;">SSH Terminal Command</span>
+            <button id="btn-copy-diag-cmd" onclick="(function(){var cmd=document.getElementById('diag-cmd-text').textContent;navigator.clipboard.writeText(cmd).then(function(){var b=document.getElementById('btn-copy-diag-cmd');b.textContent='✓ Copied!';b.style.background='rgba(16,185,129,0.15)';b.style.color='#10b981';setTimeout(function(){b.textContent='Copy';b.style.background='';b.style.color='';},2000);}).catch(function(){});})();" style="font-size:12px;font-weight:600;padding:4px 12px;border-radius:5px;border:1px solid rgba(255,255,255,0.1);background:rgba(99,102,241,0.12);color:#a78bfa;cursor:pointer;transition:all 0.15s;">
+              Copy
+            </button>
+          </div>
+          <pre id="diag-cmd-text" style="margin:0;padding:14px 16px;font-family:'JetBrains Mono',monospace;font-size:13px;color:#38bdf8;white-space:pre-wrap;word-break:break-all;line-height:1.7;">${escapeHTML(tunerData.specs?.rawDiagCmd || 'echo "CPU Cores: $(nproc)" && echo "Total RAM: $(free -m | awk \'/Mem:/ {print $2}\') MB" && echo "Disk Space: $(df -m / | awk \'NR==2 {print $2}\') MB"')}</pre>
+        </div>
+
+        <!-- Expected output example -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;" class="ssh-diag-grid">
+          <div style="background:var(--bg-tertiary);border-radius:8px;padding:14px;border:1px solid var(--border-primary);">
+            <div style="font-size:11px;font-weight:700;color:#64748b;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:10px;">Expected Output Format</div>
+            <pre style="margin:0;font-family:'JetBrains Mono',monospace;font-size:12px;color:#a3e635;line-height:1.8;">CPU Cores: ${specs.cpu || 2}
+Total RAM: ${specs.ram || 2048} MB
+Disk Space: ${specs.diskTotalMb || '—'} MB</pre>
+          </div>
+          <div style="background:var(--bg-tertiary);border-radius:8px;padding:14px;border:1px solid var(--border-primary);">
+            <div style="font-size:11px;font-weight:700;color:#64748b;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:10px;">Currently Detected (Live)</div>
+            <div style="display:grid;gap:8px;">
+              <div class="flex items-center justify-between">
+                <span style="font-size:13px;color:var(--text-secondary);">🖥️ CPU Cores (nproc)</span>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:700;color:#a78bfa;">${specs.cpu || '—'} vCPU</span>
+              </div>
+              <div class="flex items-center justify-between">
+                <span style="font-size:13px;color:var(--text-secondary);">🧠 Total RAM (free -m)</span>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:700;color:#38bdf8;">${specs.ram || '—'} MB</span>
+              </div>
+              <div class="flex items-center justify-between">
+                <span style="font-size:13px;color:var(--text-secondary);">💽 Disk Space (df -m)</span>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:700;color:#34d399;">${specs.diskTotalMb ? `${specs.diskTotalMb} MB` : '—'}</span>
+              </div>
+              <div class="flex items-center justify-between">
+                <span style="font-size:13px;color:var(--text-secondary);">🔄 Swap (free -m)</span>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:700;color:#fbbf24;">${specs.swap ? `${specs.swap} MB` : 'No Swap'}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- CPU Model info -->
+        ${specs.cpuModel ? `
+        <div style="background:rgba(99,102,241,0.06);border:1px solid rgba(99,102,241,0.15);border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:10px;">
+          <svg style="width:15px;height:15px;color:#818cf8;flex-shrink:0;" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"/></svg>
+          <span style="font-size:13px;color:var(--text-secondary);">Detected Processor: <strong style="color:#818cf8;font-family:'JetBrains Mono',monospace;font-size:12px;">${escapeHTML(specs.cpuModel)}</strong></span>
+        </div>
+        ` : ''}
+      </div>
+    </div>
+
     <!-- Configuration Comparison & Safety Table -->
     <div class="card mb-6">
       <div class="card-header"><h3 class="card-title">Low-Level Parameter Comparison</h3></div>
