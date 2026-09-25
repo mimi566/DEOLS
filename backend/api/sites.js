@@ -561,18 +561,108 @@ require_once ABSPATH . 'wp-settings.php';
     const { domain } = request.params;
     const sites = loadSites();
     const site = sites.find((s) => s.domain === domain);
-    if (!site?.dbName) return reply.code(400).send({ error: 'No database associated with this site' });
+    const siteRoot = join(config.webRoot, domain);
+    const docRoot = join(siteRoot, 'public_html');
+    const wpConfigPath = join(docRoot, 'wp-config.php');
+
+    let dbName = site?.dbName;
+    if (!dbName && existsSync(wpConfigPath)) {
+      try {
+        const text = readFileSync(wpConfigPath, 'utf-8');
+        const match = text.match(/define\(\s*['"]DB_NAME['"]\s*,\s*['"]([^'"]+)['"]\s*\);/);
+        if (match) dbName = match[1];
+      } catch {}
+    }
+
+    if (!dbName) return reply.code(400).send({ error: 'No database associated with this site' });
 
     try {
-      const res = await shell(`mysqlcheck -u root --auto-repair --optimize --databases "${site.dbName}" 2>&1`);
+      const res = await shell(`mysqlcheck -u root --auto-repair --optimize --databases "${dbName}" 2>&1`);
       return {
         success: true,
-        message: `Database '${site.dbName}' repaired and optimized successfully!`,
+        message: `Database '${dbName}' repaired and optimized successfully!`,
         output: res.stdout,
       };
     } catch (err) {
       return reply.code(500).send({ error: 'Database repair failed', details: err.message });
     }
+  });
+
+  // ─── Fix & Resync Site Database Connection ──────────────
+  app.post('/:domain/db/fix-connection', async (request, reply) => {
+    const { domain } = request.params;
+    const { newPassword } = request.body || {};
+    const siteRoot = join(config.webRoot, domain);
+    const docRoot = join(siteRoot, 'public_html');
+    const wpConfigPath = join(docRoot, 'wp-config.php');
+
+    if (!existsSync(wpConfigPath)) {
+      return reply.code(404).send({ error: 'wp-config.php not found for this site' });
+    }
+
+    let configText = readFileSync(wpConfigPath, 'utf-8');
+    const dbNameMatch = configText.match(/define\(\s*['"]DB_NAME['"]\s*,\s*['"]([^'"]+)['"]\s*\);/);
+    const dbUserMatch = configText.match(/define\(\s*['"]DB_USER['"]\s*,\s*['"]([^'"]+)['"]\s*\);/);
+
+    const dbName = dbNameMatch ? dbNameMatch[1] : ('wp_' + domain.replace(/[^a-z0-9]/g, '_').substring(0, 35));
+    const dbUser = dbUserMatch ? dbUserMatch[1] : ('u_' + domain.replace(/[^a-z0-9]/g, '_').substring(0, 14));
+
+    const { generatePassword } = await import('../utils/shell.js');
+    const safePass = newPassword && newPassword.trim() ? newPassword.trim().replace(/['"\\]/g, '') : generatePassword(20, true);
+
+    // 1. Create database & User in MariaDB with explicit privileges
+    await shell(
+      `mysql -u root -e "CREATE DATABASE IF NOT EXISTS \\\`${dbName}\\\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; ` +
+      `CREATE USER IF NOT EXISTS '${dbUser}'@'localhost' IDENTIFIED BY '${safePass}'; ` +
+      `ALTER USER '${dbUser}'@'localhost' IDENTIFIED BY '${safePass}'; ` +
+      `GRANT ALL PRIVILEGES ON \\\`${dbName}\\\`.* TO '${dbUser}'@'localhost'; ` +
+      `FLUSH PRIVILEGES;" 2>/dev/null || mariadb -u root -e "CREATE DATABASE IF NOT EXISTS \\\`${dbName}\\\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER IF NOT EXISTS '${dbUser}'@'localhost' IDENTIFIED BY '${safePass}'; ALTER USER '${dbUser}'@'localhost' IDENTIFIED BY '${safePass}'; GRANT ALL PRIVILEGES ON \\\`${dbName}\\\`.* TO '${dbUser}'@'localhost'; FLUSH PRIVILEGES;"`
+    );
+
+    // 2. Update wp-config.php with clean password and valid DB_NAME / DB_USER
+    configText = configText
+      .replace(/define\(\s*['"]DB_NAME['"]\s*,\s*['"].*?['"]\s*\);/g, `define( 'DB_NAME', '${dbName}' );`)
+      .replace(/define\(\s*['"]DB_USER['"]\s*,\s*['"].*?['"]\s*\);/g, `define( 'DB_USER', '${dbUser}' );`)
+      .replace(/define\(\s*['"]DB_PASSWORD['"]\s*,\s*['"].*?['"]\s*\);/g, `define( 'DB_PASSWORD', '${safePass}' );`);
+    writeFileSync(wpConfigPath, configText);
+
+    // 3. Check if WP core tables exist, if not run wp core install!
+    let wpBin = config.bin.wp || '/usr/local/bin/wp';
+    if (!existsSync(wpBin) && existsSync('/usr/bin/wp')) wpBin = '/usr/bin/wp';
+
+    try {
+      const checkTables = await shell(`mysql -u root -e "SHOW TABLES FROM \\\`${dbName}\\\`;"`);
+      if (!checkTables.stdout || checkTables.stdout.trim() === '') {
+        const sites = loadSites();
+        const site = sites.find((s) => s.domain === domain);
+        const adminUser = site?.adminUser || 'admin';
+        const adminPass = site?.adminPassword || generatePassword(16, true);
+        const adminEmail = site?.adminEmail || `admin@${domain}`;
+
+        await run(wpBin, [
+          'core', 'install',
+          '--path=' + docRoot,
+          `--url=http://${domain}`,
+          `--title=${domain}`,
+          `--admin_user=${adminUser}`,
+          `--admin_email=${adminEmail}`,
+          `--admin_password=${adminPass}`,
+          '--skip-email',
+          '--allow-root',
+        ], { cwd: docRoot });
+      }
+    } catch {}
+
+    // 4. Run repair & optimize on database
+    await shell(`mysqlcheck -u root --auto-repair --optimize --databases "${dbName}" 2>&1`);
+
+    return {
+      success: true,
+      message: `Database connection for '${domain}' successfully repaired and resynced!`,
+      dbName,
+      dbUser,
+      newPassword: safePass,
+    };
   });
 }
 

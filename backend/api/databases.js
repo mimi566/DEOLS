@@ -109,4 +109,54 @@ export default async function databaseRoutes(app) {
 
     return { success: true };
   });
+
+  // ─── Change Database User Password ────────────────────
+  app.put('/users/:username/password', async (request, reply) => {
+    const { password, host = 'localhost', syncDomain } = request.body || {};
+    if (!password) return reply.code(400).send({ error: 'Password is required' });
+
+    const safeUser = request.params.username.replace(/[^a-zA-Z0-9_]/g, '');
+    const safePass = password.replace(/['"\\]/g, '');
+
+    const result = await shell(
+      `mysql -u root -e "ALTER USER '${safeUser}'@'${host}' IDENTIFIED BY '${safePass}'; FLUSH PRIVILEGES;" 2>/dev/null || mariadb -u root -e "SET PASSWORD FOR '${safeUser}'@'${host}' = PASSWORD('${safePass}'); FLUSH PRIVILEGES;"`
+    );
+
+    if (result.code !== 0) {
+      return reply.code(500).send({ error: 'Failed to update database password', details: result.stderr });
+    }
+
+    // Automatically update wp-config.php if syncDomain is specified
+    if (syncDomain) {
+      const { existsSync, readFileSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const cleanDomain = syncDomain.replace(/[^a-z0-9.\-]/gi, '').toLowerCase();
+      const wpConfigPath = join(config.webRoot, cleanDomain, 'public_html', 'wp-config.php');
+
+      if (existsSync(wpConfigPath)) {
+        try {
+          let content = readFileSync(wpConfigPath, 'utf-8');
+          content = content.replace(
+            /define\(\s*['"]DB_PASSWORD['"]\s*,\s*['"].*?['"]\s*\);/g,
+            `define( 'DB_PASSWORD', '${safePass}' );`
+          );
+          writeFileSync(wpConfigPath, content);
+        } catch {}
+      }
+    }
+
+    return { success: true, username: safeUser };
+  });
+
+  // ─── Repair & Optimize Database ───────────────────────
+  app.post('/:name/repair', async (request, reply) => {
+    const safeName = request.params.name.replace(/[^a-zA-Z0-9_]/g, '');
+    const result = await shell(`mysqlcheck -u root --auto-repair --optimize --databases "${safeName}" 2>&1`);
+
+    return {
+      success: result.code === 0,
+      output: result.stdout || result.stderr,
+      database: safeName,
+    };
+  });
 }

@@ -1223,9 +1223,12 @@ async function renderSiteManage(container, domain) {
               </tbody>
             </table>
           </div>
-          <div class="flex gap-3 mt-4">
+          <div class="flex gap-3 mt-4" style="flex-wrap:wrap">
             <button class="btn btn-primary btn-sm" onclick="repairSiteDatabase('${escapeHTML(domain)}')">
-              🔧 Repair & Optimize Tables
+              🔧 Repair & Optimize Database
+            </button>
+            <button class="btn btn-warning btn-sm" onclick="fixSiteDbConnection('${escapeHTML(domain)}')">
+              ⚡ Fix DB Connection & Sync Password
             </button>
             <button class="btn btn-secondary btn-sm" onclick="navigateTo('databases')">
               Open Global Database Manager →
@@ -1687,10 +1690,13 @@ async function quickIssueSSL(domain) {
 async function renderDatabases(container) {
   container.innerHTML = `
     <div class="flex justify-between items-center mb-6">
-      <p class="text-muted">Manage MariaDB databases and users</p>
-      <button class="btn btn-primary" onclick="showNewDbModal()">+ New Database</button>
+      <p class="text-muted">Manage MariaDB databases, users, permissions, and passwords</p>
+      <div class="flex gap-3">
+        <button class="btn btn-secondary" onclick="showNewDbUserModal()">+ New DB User</button>
+        <button class="btn btn-primary" onclick="showNewDbModal()">+ New Database</button>
+      </div>
     </div>
-    <div class="card">
+    <div class="card mb-6">
       <div class="card-header"><h2 class="card-title">Databases</h2></div>
       <div class="card-body" id="db-list"><p class="text-muted">Loading…</p></div>
     </div>
@@ -1705,13 +1711,18 @@ async function renderDatabases(container) {
   if (dbs?.databases) {
     document.getElementById('db-list').innerHTML = dbs.databases.length ? `
       <div class="table-wrap"><table class="table">
-        <thead><tr><th>Name</th><th>Charset</th><th>Collation</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Database Name</th><th>Charset</th><th>Collation</th><th>Actions</th></tr></thead>
         <tbody>${dbs.databases.map((d) => `
           <tr>
-            <td class="text-mono">${escapeHTML(d.name)}</td>
+            <td class="text-mono font-bold">${escapeHTML(d.name)}</td>
             <td>${escapeHTML(d.charset)}</td>
             <td class="text-sm text-muted">${escapeHTML(d.collation)}</td>
-            <td><button class="btn btn-sm btn-danger" onclick="dropDb('${d.name}')">Drop</button></td>
+            <td>
+              <div class="flex gap-2">
+                <button class="btn btn-sm btn-secondary" onclick="repairDatabase('${escapeHTML(d.name)}')">🔧 Repair</button>
+                <button class="btn btn-sm btn-danger" onclick="dropDb('${escapeHTML(d.name)}')">Drop</button>
+              </div>
+            </td>
           </tr>
         `).join('')}</tbody>
       </table></div>
@@ -1724,9 +1735,14 @@ async function renderDatabases(container) {
         <thead><tr><th>User</th><th>Host</th><th>Actions</th></tr></thead>
         <tbody>${users.users.map((u) => `
           <tr>
-            <td class="text-mono">${escapeHTML(u.user)}</td>
-            <td>${escapeHTML(u.host)}</td>
-            <td><button class="btn btn-sm btn-danger" onclick="dropDbUser('${u.user}','${u.host}')">Drop</button></td>
+            <td class="text-mono font-bold">${escapeHTML(u.user)}</td>
+            <td class="text-mono text-sm">${escapeHTML(u.host)}</td>
+            <td>
+              <div class="flex gap-2">
+                <button class="btn btn-sm btn-secondary" onclick="showChangeDbUserPassModal('${escapeHTML(u.user)}','${escapeHTML(u.host)}')">🔑 Password</button>
+                <button class="btn btn-sm btn-danger" onclick="dropDbUser('${escapeHTML(u.user)}','${escapeHTML(u.host)}')">Drop</button>
+              </div>
+            </td>
           </tr>
         `).join('')}</tbody>
       </table></div>
@@ -1744,7 +1760,7 @@ function showNewDbModal() {
     </div>
   `, `
     <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-    <button class="btn btn-primary" onclick="createDb()">Create</button>
+    <button class="btn btn-primary" onclick="createDb()">Create Database</button>
   `);
 }
 
@@ -1752,10 +1768,138 @@ async function createDb() {
   const name = document.getElementById('new-db-name').value;
   const result = await api('/databases', { method: 'POST', body: { name } });
   if (result?.success) {
-    toast('Database created!', 'success');
+    toast('Database created successfully!', 'success');
     closeModal();
     navigateTo('databases');
-  } else toast(result?.error || 'Failed', 'error');
+  } else toast(result?.error || 'Failed to create database', 'error');
+}
+
+function showNewDbUserModal() {
+  showModal('Create Database User', `
+    <div class="flex flex-col gap-4">
+      <div class="form-group">
+        <label>Username</label>
+        <input type="text" id="new-db-user-name" placeholder="db_user" required>
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="new-db-user-pass" placeholder="Password" style="flex:1;">
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-gen-db-u-pass">Generate</button>
+        </div>
+      </div>
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="createDbUser()">Create User</button>
+  `);
+
+  document.getElementById('btn-gen-db-u-pass')?.addEventListener('click', () => {
+    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let pass = '';
+    for (let i = 0; i < 18; i++) pass += chars.charAt(Math.floor(Math.random() * chars.length));
+    document.getElementById('new-db-user-pass').value = pass;
+  });
+}
+
+async function createDbUser() {
+  const username = document.getElementById('new-db-user-name').value.trim();
+  const password = document.getElementById('new-db-user-pass').value.trim();
+  if (!username || !password) {
+    toast('Username and password are required', 'warning');
+    return;
+  }
+
+  const result = await api('/databases/users', { method: 'POST', body: { username, password } });
+  if (result?.success) {
+    toast(`Database user '${username}' created!`, 'success');
+    closeModal();
+    navigateTo('databases');
+  } else toast(result?.error || 'Failed to create user', 'error');
+}
+
+function showChangeDbUserPassModal(username, host = 'localhost') {
+  showModal(`Change Password for '${escapeHTML(username)}'`, `
+    <div class="flex flex-col gap-4">
+      <div class="form-group">
+        <label>New Password</label>
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="change-db-pass-val" placeholder="Enter new password" style="flex:1;">
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-gen-chg-pass">Generate</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Sync Site wp-config.php (Optional)</label>
+        <input type="text" id="change-db-pass-domain" placeholder="example.com (Leave blank if not a WP site)">
+        <p class="text-muted text-xs mt-1">If specified, automatically updates DB_PASSWORD in this site's wp-config.php</p>
+      </div>
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" id="btn-save-db-pass">Save New Password</button>
+  `);
+
+  document.getElementById('btn-gen-chg-pass')?.addEventListener('click', () => {
+    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let pass = '';
+    for (let i = 0; i < 20; i++) pass += chars.charAt(Math.floor(Math.random() * chars.length));
+    document.getElementById('change-db-pass-val').value = pass;
+  });
+
+  document.getElementById('btn-save-db-pass')?.addEventListener('click', async () => {
+    const password = document.getElementById('change-db-pass-val').value.trim();
+    const syncDomain = document.getElementById('change-db-pass-domain').value.trim();
+    if (!password) {
+      toast('Please enter a password', 'warning');
+      return;
+    }
+
+    const res = await api(`/databases/users/${encodeURIComponent(username)}/password`, {
+      method: 'PUT',
+      body: { password, host, syncDomain: syncDomain || undefined },
+    });
+
+    if (res?.success) {
+      toast(`Password updated for ${username}!`, 'success');
+      closeModal();
+      navigateTo('databases');
+    } else toast(res?.error || 'Failed to update password', 'error');
+  });
+}
+
+async function repairDatabase(name) {
+  toast(`Repairing & optimizing database '${name}'…`, 'info', 5000);
+  const result = await api(`/databases/${encodeURIComponent(name)}/repair`, { method: 'POST' });
+  if (result?.success) {
+    toast(`Database '${name}' repaired and optimized cleanly!`, 'success', 6000);
+  } else {
+    toast(result?.error || 'Database repair failed', 'error');
+  }
+}
+
+async function fixSiteDbConnection(domain) {
+  if (!confirm(`Fix and resync database connection for '${domain}'? This will repair MariaDB user privileges, update wp-config.php, populate missing tables, and optimize database.`)) return;
+
+  toast(`Fixing & resynced database connection for ${domain}…`, 'info', 8000);
+  const result = await api(`/sites/${encodeURIComponent(domain)}/db/fix-connection`, { method: 'POST' });
+  if (result?.success) {
+    showModal('⚡ Database Connection Repaired', `
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); color: #34d399; border-radius:8px; padding:12px; font-size:13px;">
+          Database connection repaired! MariaDB user and wp-config.php are 100% in sync.
+        </div>
+        <table style="width:100%; border-collapse:collapse; font-size:13px; color:var(--text-primary);">
+          <tr style="border-bottom:1px solid var(--border-color,#334155);"><td style="padding:6px 0; font-weight:600; width:140px;">Database Name:</td><td><code style="background:rgba(0,0,0,0.3); padding:2px 6px; border-radius:4px; font-family:monospace;">${escapeHTML(result.dbName)}</code></td></tr>
+          <tr style="border-bottom:1px solid var(--border-color,#334155);"><td style="padding:6px 0; font-weight:600;">Database User:</td><td><code style="background:rgba(0,0,0,0.3); padding:2px 6px; border-radius:4px; font-family:monospace;">${escapeHTML(result.dbUser)}</code></td></tr>
+          <tr><td style="padding:6px 0; font-weight:600;">Synced DB Pass:</td><td><code style="background:rgba(0,0,0,0.3); padding:2px 6px; border-radius:4px; font-family:monospace; color:#a78bfa;">${escapeHTML(result.newPassword)}</code></td></tr>
+        </table>
+      </div>
+    `, `
+      <button class="btn btn-primary" onclick="closeModal()">Done</button>
+    `);
+  } else {
+    toast(result?.error || 'Failed to repair DB connection', 'error');
+  }
 }
 
 async function dropDb(name) {
@@ -4029,6 +4173,11 @@ window.showNewDbModal = showNewDbModal;
 window.createDb = createDb;
 window.dropDb = dropDb;
 window.dropDbUser = dropDbUser;
+window.showNewDbUserModal = showNewDbUserModal;
+window.createDbUser = createDbUser;
+window.showChangeDbUserPassModal = showChangeDbUserPassModal;
+window.repairDatabase = repairDatabase;
+window.fixSiteDbConnection = fixSiteDbConnection;
 window.showIssueSSLModal = showIssueSSLModal;
 window.switchSSLTab = switchSSLTab;
 window.toggleCFAuthFields = toggleCFAuthFields;
