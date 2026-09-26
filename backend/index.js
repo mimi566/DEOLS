@@ -35,6 +35,7 @@ import pythonRoutes from './api/python.js';
 import securityRoutes from './api/security.js';
 import olsRoutes from './api/ols.js';
 import tunerRoutes from './api/tuner.js';
+import leanEngineRoutes from './api/leanEngine.js';
 
 // Background Server-Side Automation Daemon
 import { startAutomationDaemon, stopAutomationDaemon } from './services/automation.js';
@@ -157,6 +158,7 @@ async function bootstrap() {
   await app.register(securityRoutes, { prefix: '/api/security' });
   await app.register(olsRoutes, { prefix: '/api/ols' });
   await app.register(tunerRoutes, { prefix: '/api/advanced/tuner' });
+  await app.register(leanEngineRoutes, { prefix: '/api/advanced/lean-engine' });
 
   // ─── Panel Info Endpoint ────────────────────────────────
 

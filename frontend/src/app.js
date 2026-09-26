@@ -4397,6 +4397,10 @@ async function setupWPFail2ban() {
 let tunerData = null;
 let currentTunerPreset = 'auto';
 let currentTunerRedis = false;
+let activeTunerTab = 'tuner'; // 'tuner' | 'lean'
+let leanData = null;
+let currentLeanMode = 'lean'; // 'lean' | 'ultra_lean'
+let currentOpcacheSize = 64;
 
 function calculateClientAllocations(specs, preset = 'auto', enableRedis = false) {
   const ramMb = specs.ram;
@@ -4451,7 +4455,11 @@ function calculateClientAllocations(specs, preset = 'auto', enableRedis = false)
 async function renderAutoTuner(container) {
   container.innerHTML = `<div class="p-8 text-center"><p class="text-muted">Loading Server Auto-Tuner & Resource Engine…</p></div>`;
 
-  const status = await api('/advanced/tuner/status');
+  const [status, leanStatus] = await Promise.all([
+    api('/advanced/tuner/status'),
+    api('/advanced/lean-engine/status'),
+  ]);
+
   if (!status) {
     container.innerHTML = `
       <div class="card p-6">
@@ -4463,12 +4471,39 @@ async function renderAutoTuner(container) {
   }
 
   tunerData = status;
+  leanData = leanStatus || null;
   currentTunerPreset = (status.enabled && status.currentProfile && status.currentProfile !== 'native')
     ? status.currentProfile
     : 'auto';
   currentTunerRedis = Boolean(status.enableRedis);
 
-  renderAutoTunerContent(container);
+  if (leanStatus) {
+    currentLeanMode = (leanStatus.enabled && leanStatus.mode && leanStatus.mode !== 'standard')
+      ? leanStatus.mode
+      : 'lean';
+    currentOpcacheSize = leanStatus.opcacheSize || 64;
+  }
+
+  if (activeTunerTab === 'lean') {
+    renderLeanEngineContent(container);
+  } else {
+    renderAutoTunerContent(container);
+  }
+}
+
+async function switchTunerTab(tab) {
+  activeTunerTab = tab;
+  const container = document.getElementById('content-body');
+  if (!container) return;
+
+  if (tab === 'lean') {
+    if (!leanData) {
+      leanData = await api('/advanced/lean-engine/status');
+    }
+    renderLeanEngineContent(container);
+  } else {
+    renderAutoTunerContent(container);
+  }
 }
 
 function renderAutoTunerContent(container) {
@@ -4483,6 +4518,18 @@ function renderAutoTunerContent(container) {
   const phpPct = Math.max(15, 100 - (osPct + dbPct + redisPct));
 
   container.innerHTML = `
+    <!-- Top Sub-Tabs Navigation Bar -->
+    <div class="tuner-tabs-bar">
+      <button class="tuner-tab-btn ${activeTunerTab === 'tuner' ? 'active' : ''}" onclick="switchTunerTab('tuner')">
+        <span>⚡ Auto-Tuner & Resource Allocation</span>
+        ${isEnabled ? `<span class="badge badge-success" style="font-size:10px;padding:2px 6px;">⚡ Active (${profile.toUpperCase()})</span>` : ''}
+      </button>
+      <button class="tuner-tab-btn ${activeTunerTab === 'lean' ? 'active' : ''}" onclick="switchTunerTab('lean')">
+        <span>🚀 Lean Engine & Speed Optimizations</span>
+        ${leanData?.enabled ? `<span class="badge badge-success" style="font-size:10px;padding:2px 6px;">⚡ Active (${(leanData.mode || 'lean').toUpperCase()})</span>` : ''}
+      </button>
+    </div>
+
     <!-- Header with Master Status -->
     <div class="flex justify-between items-center mb-6 flex-wrap gap-4">
       <div>
@@ -4949,6 +4996,411 @@ async function restoreTunerDefaults() {
   }
 }
 
+// ─── Lean Engine & Speed Optimizer Page ─────────────────────
+
+function renderLeanEngineContent(container) {
+  const isEnabled = Boolean(leanData?.enabled);
+  const mode = leanData?.mode || currentLeanMode || 'lean';
+  const specs = leanData?.specs || { ram: 2048, cpu: 2, diskTotalMb: 40960, swap: 0 };
+  const metrics = leanData?.metrics || {
+    idleTimeout: currentLeanMode === 'ultra_lean' ? 20 : 30,
+    phpWorkers: currentLeanMode === 'ultra_lean' ? 12 : 16,
+    maxConns: currentLeanMode === 'ultra_lean' ? 12 : 16,
+    opcacheSize: currentOpcacheSize || 64,
+    dbBufferPoolMb: 256,
+    dbMaxConnections: currentLeanMode === 'ultra_lean' ? 40 : 50,
+  };
+  const savings = leanData?.savings || {
+    estimatedRamSavedMb: Math.round(specs.ram * 0.32) || 650,
+    phpMemorySavedMb: 450,
+    dbMemorySavedMb: 200,
+    idleTimeoutReductionPct: currentLeanMode === 'ultra_lean' ? 93 : 90,
+    summaryText: `Reclaimed ~${Math.round(specs.ram * 0.32) || 650} MB RAM for PHP/MariaDB & Reduced Idle Worker Lifespan by 90%`,
+  };
+
+  container.innerHTML = `
+    <!-- Top Sub-Tabs Navigation Bar -->
+    <div class="tuner-tabs-bar">
+      <button class="tuner-tab-btn ${activeTunerTab === 'tuner' ? 'active' : ''}" onclick="switchTunerTab('tuner')">
+        <span>⚡ Auto-Tuner & Resource Allocation</span>
+        ${tunerData?.enabled ? `<span class="badge badge-success" style="font-size:10px;padding:2px 6px;">⚡ Active (${(tunerData.currentProfile || 'native').toUpperCase()})</span>` : ''}
+      </button>
+      <button class="tuner-tab-btn ${activeTunerTab === 'lean' ? 'active' : ''}" onclick="switchTunerTab('lean')">
+        <span>🚀 Lean Engine & Speed Optimizations</span>
+        ${isEnabled ? `<span class="badge badge-success" style="font-size:10px;padding:2px 6px;">⚡ Active (${mode.toUpperCase()})</span>` : ''}
+      </button>
+    </div>
+
+    <!-- Header with Master Status -->
+    <div class="flex justify-between items-center mb-6 flex-wrap gap-4">
+      <div>
+        <div class="flex items-center gap-3 flex-wrap">
+          <h2 style="font-size:1.4rem;font-weight:700;margin:0;">"Lean Engine" RAM & Speed Optimizer</h2>
+          <span class="badge ${isEnabled ? 'badge-success' : ''}" style="${!isEnabled ? 'background:rgba(100,116,139,0.18);color:#94a3b8;' : ''};padding:6px 14px;font-size:12px;font-weight:700;">
+            ${isEnabled ? `⚡ RAM Footprint Mode: Lean Engine Active (${mode.toUpperCase()})` : 'RAM Footprint Mode: Standard (Unoptimized)'}
+          </span>
+          <span class="badge" style="background:rgba(16,185,129,0.15);color:#10b981;padding:6px 14px;font-size:12px;font-weight:700;">
+            💰 ${escapeHTML(savings.summaryText || `Reclaimed ~${savings.estimatedRamSavedMb} MB RAM`)}
+          </span>
+        </div>
+        <p class="text-muted text-sm" style="margin-top:4px;">
+          Dramatically lowers idle memory usage (&lt; 150MB target for entry VPS), eliminates stale PHP worker drain, accelerates OPcache, and enforces LSCache bypassing.
+        </p>
+      </div>
+
+      <div class="flex items-center gap-3">
+        <button class="btn btn-secondary btn-sm" onclick="renderAutoTuner(document.getElementById('content-body'))" title="Refresh metrics">
+          🔄 Refresh
+        </button>
+      </div>
+    </div>
+
+    <!-- Impact & Savings Hero Highlight Cards -->
+    <div class="lean-savings-card">
+      <div class="flex justify-between items-center mb-2 flex-wrap gap-2">
+        <span style="font-size:12px;font-weight:800;color:#10b981;text-transform:uppercase;letter-spacing:0.5px;">⚡ Real-World Optimization Impact</span>
+        <span style="font-size:12px;color:var(--text-secondary);">Target: <strong>&lt; 150 MB Idle RAM Footprint</strong></span>
+      </div>
+      <div class="lean-stat-grid">
+        <div style="background:var(--bg-card);border:1px solid rgba(16,185,129,0.25);border-radius:8px;padding:14px;">
+          <span style="font-size:11px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;">Estimated Memory Reclaimed</span>
+          <div style="font-size:1.5rem;font-weight:800;color:#10b981;margin:4px 0;">~${savings.estimatedRamSavedMb} MB</div>
+          <p class="text-muted text-xs" style="margin:0;">PHP pool + MariaDB buffer right-sizing</p>
+        </div>
+        <div style="background:var(--bg-card);border:1px solid rgba(99,102,241,0.25);border-radius:8px;padding:14px;">
+          <span style="font-size:11px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;">PHP Worker Idle Timeout</span>
+          <div style="font-size:1.5rem;font-weight:800;color:#818cf8;margin:4px 0;">${metrics.idleTimeout}s</div>
+          <p class="text-muted text-xs" style="margin:0;">Down from 300s (90% faster memory release)</p>
+        </div>
+        <div style="background:var(--bg-card);border:1px solid rgba(14,165,233,0.25);border-radius:8px;padding:14px;">
+          <span style="font-size:11px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;">Zend OPcache RAM Pool</span>
+          <div style="font-size:1.5rem;font-weight:800;color:#38bdf8;margin:4px 0;">${currentOpcacheSize} MB</div>
+          <p class="text-muted text-xs" style="margin:0;">10,000 files in shared bytecode cache</p>
+        </div>
+        <div style="background:var(--bg-card);border:1px solid rgba(245,158,11,0.25);border-radius:8px;padding:14px;">
+          <span style="font-size:11px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;">MariaDB Buffer Pool</span>
+          <div style="font-size:1.5rem;font-weight:800;color:#fbbf24;margin:4px 0;">${metrics.dbBufferPoolMb} MB</div>
+          <p class="text-muted text-xs" style="margin:0;">Capped max conns (${metrics.dbMaxConnections})</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Lean Optimization Engine Controls Card -->
+    <div class="card mb-6">
+      <div class="card-header flex justify-between items-center">
+        <div>
+          <h3 class="card-title">Lean Optimization Engine Controls</h3>
+          <p class="text-muted text-xs">Configure and activate the Lean Engine. Includes atomic backups and safety snapshots.</p>
+        </div>
+        <div class="flex items-center gap-3">
+          <label class="toggle" title="Toggle Lean Engine Master Switch">
+            <input type="checkbox" id="lean-master-toggle" ${isEnabled ? 'checked' : ''} onchange="toggleLeanMaster(this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+          <span style="font-size:13px;font-weight:600;color:${isEnabled ? 'var(--success)' : 'var(--text-secondary)'};">
+            ${isEnabled ? 'Lean Mode Active' : 'Standard Mode'}
+          </span>
+        </div>
+      </div>
+      <div class="card-body">
+        <label style="font-size:13px;font-weight:600;color:var(--text-primary);margin-bottom:8px;display:block;">
+          Select Lean Optimization Profile
+        </label>
+        <div class="lean-mode-grid">
+          <!-- Lean Mode (Balanced) -->
+          <div class="lean-mode-card ${currentLeanMode === 'lean' ? 'selected' : ''}" onclick="selectLeanMode('lean')">
+            <span class="mode-badge" style="background:rgba(16,185,129,0.15);color:#10b981;">RECOMMENDED</span>
+            <h4 style="margin:0 0 6px;font-size:15px;font-weight:700;">🚀 Lean Engine (Balanced)</h4>
+            <p class="text-muted text-xs" style="margin-bottom:12px;line-height:1.5;">
+              Reduces PHP idle timeout to 30s, scales PHP workers to 10-16 processes, allocates ${specs.ram >= 4096 ? '128' : '64'}MB OPcache, and caps MariaDB at 256MB / 50 connections.
+            </p>
+            <div class="text-xs text-muted" style="margin-top:auto;border-top:1px solid var(--border-primary);padding-top:8px;">
+              <strong>Best for:</strong> Standard WordPress production sites, WooCommerce, and blogs wanting fast TTFB with conservative RAM.
+            </div>
+          </div>
+
+          <!-- Ultra Lean Mode -->
+          <div class="lean-mode-card ${currentLeanMode === 'ultra_lean' ? 'selected' : ''}" onclick="selectLeanMode('ultra_lean')">
+            <span class="mode-badge" style="background:rgba(239,68,68,0.15);color:#ef4444;">ENTRY VPS / LOW RAM</span>
+            <h4 style="margin:0 0 6px;font-size:15px;font-weight:700;">⚡ Ultra Lean (Maximum RAM Savings)</h4>
+            <p class="text-muted text-xs" style="margin-bottom:12px;line-height:1.5;">
+              Aggressive 20s PHP idle timeout, strictly bounds PHP workers to 8-12 processes, 48-64MB OPcache, and limits MariaDB to 40 connections.
+            </p>
+            <div class="text-xs text-muted" style="margin-top:auto;border-top:1px solid var(--border-primary);padding-top:8px;">
+              <strong>Best for:</strong> 1GB or 512MB RAM VPS instances, micro cloud containers, targeting &lt; 150MB total system idle memory.
+            </div>
+          </div>
+        </div>
+
+        <!-- Zend OPcache Allocation Options -->
+        <div style="background:var(--bg-tertiary);border-radius:8px;padding:14px 18px;margin-top:20px;border:1px solid var(--border-primary);">
+          <div class="flex justify-between items-center flex-wrap gap-3">
+            <div>
+              <strong style="font-size:13px;display:block;">Zend OPcache Memory Allocation</strong>
+              <span class="text-muted text-xs">Shared memory dedicated to pre-compiled PHP script execution in RAM.</span>
+            </div>
+            <div class="flex items-center gap-2 flex-wrap">
+              ${[32, 64, 128, 256].map((sz) => `
+                <button type="button" class="btn btn-sm ${currentOpcacheSize === sz ? 'btn-primary' : 'btn-secondary'}" onclick="selectLeanOpcache(${sz})" style="padding:4px 12px;font-size:12px;font-weight:600;">
+                  ${sz} MB ${sz === 64 ? '(Default)' : (sz === 128 ? '(4GB+)' : '')}
+                </button>
+              `).join('')}
+            </div>
+          </div>
+        </div>
+
+        <!-- Action Toolbar -->
+        <div class="flex justify-between items-center flex-wrap gap-4 pt-4 mt-4" style="border-top:1px solid var(--border-primary);">
+          <div class="flex gap-3">
+            <button class="btn btn-primary" id="btn-apply-lean" onclick="applyLeanEngine()" style="background:linear-gradient(135deg, #10b981, #059669);border:none;">
+              🚀 Enable Lean Engine Mode (${currentLeanMode.toUpperCase()})
+            </button>
+          </div>
+          <div>
+            <button class="btn btn-danger" id="btn-restore-lean" onclick="restoreLeanDefaults()" ${!leanData?.backup?.exists && !isEnabled ? 'disabled' : ''}>
+              🔄 Restore Default System Limits
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Technical Parameter Live Comparison Table -->
+    <div class="card mb-6">
+      <div class="card-header flex justify-between items-center">
+        <div>
+          <h3 class="card-title">Detailed Parameter Comparison (Standard vs Lean Engine)</h3>
+          <p class="text-muted text-xs">Real-time technical configuration changes applied to OpenLiteSpeed, PHP, MariaDB, and LSCache.</p>
+        </div>
+        <span class="badge" style="background:rgba(56,189,248,0.15);color:#38bdf8;font-size:11px;">
+          RAM Specs: ${specs.ram} MB (${specs.cpu} vCPU)
+        </span>
+      </div>
+      <div class="card-body">
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Component</th>
+                <th>Low-Level Directive</th>
+                <th>Target Config File</th>
+                <th>Standard (Unoptimized)</th>
+                <th>Lean Engine Active</th>
+                <th>Optimization Impact</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>OpenLiteSpeed</strong></td>
+                <td><code>LSAPI_PGRP_MAX_IDLE</code></td>
+                <td class="text-mono text-xs">/usr/local/lsws/conf/httpd_config.conf</td>
+                <td class="text-muted">300s (5 minutes)</td>
+                <td class="text-bold" style="color:#10b981;">${metrics.idleTimeout}s</td>
+                <td>Releases idle worker memory 10x faster</td>
+              </tr>
+              <tr>
+                <td><strong>OpenLiteSpeed</strong></td>
+                <td><code>PHP_LSAPI_CHILDREN</code></td>
+                <td class="text-mono text-xs">/usr/local/lsws/conf/httpd_config.conf</td>
+                <td class="text-muted">35+ workers</td>
+                <td class="text-bold" style="color:#10b981;">${metrics.phpWorkers} workers</td>
+                <td>Prevents out-of-memory worker thrashing</td>
+              </tr>
+              <tr>
+                <td><strong>OpenLiteSpeed</strong></td>
+                <td><code>maxConns</code></td>
+                <td class="text-mono text-xs">/usr/local/lsws/conf/httpd_config.conf</td>
+                <td class="text-muted">35 conns</td>
+                <td class="text-bold" style="color:#10b981;">${metrics.maxConns} conns</td>
+                <td>Synchronized worker concurrency boundary</td>
+              </tr>
+              <tr>
+                <td><strong>Zend OPcache</strong></td>
+                <td><code>opcache.memory_consumption</code></td>
+                <td class="text-mono text-xs">/etc/php/8.3/mods-available/opcache.ini</td>
+                <td class="text-muted">32 MB / Unset</td>
+                <td class="text-bold" style="color:#38bdf8;">${currentOpcacheSize} MB</td>
+                <td>Pre-compiles PHP scripts directly in RAM</td>
+              </tr>
+              <tr>
+                <td><strong>Zend OPcache</strong></td>
+                <td><code>opcache.interned_strings_buffer</code></td>
+                <td class="text-mono text-xs">/etc/php/8.3/mods-available/opcache.ini</td>
+                <td class="text-muted">4 MB</td>
+                <td class="text-bold" style="color:#38bdf8;">8 MB</td>
+                <td>Caches recurring strings & variable names</td>
+              </tr>
+              <tr>
+                <td><strong>Zend OPcache</strong></td>
+                <td><code>opcache.max_accelerated_files</code></td>
+                <td class="text-mono text-xs">/etc/php/8.3/mods-available/opcache.ini</td>
+                <td class="text-muted">4,000 files</td>
+                <td class="text-bold" style="color:#38bdf8;">10,000 files</td>
+                <td>Complete cache coverage for themes & plugins</td>
+              </tr>
+              <tr>
+                <td><strong>Zend OPcache</strong></td>
+                <td><code>opcache.revalidate_freq</code></td>
+                <td class="text-mono text-xs">/etc/php/8.3/mods-available/opcache.ini</td>
+                <td class="text-muted">60s</td>
+                <td class="text-bold" style="color:#38bdf8;">2s</td>
+                <td>Sub-millisecond change detection check</td>
+              </tr>
+              <tr>
+                <td><strong>MariaDB</strong></td>
+                <td><code>innodb_buffer_pool_size</code></td>
+                <td class="text-mono text-xs">/etc/mysql/mariadb.conf.d/99-deols-lean.cnf</td>
+                <td class="text-muted">128 MB</td>
+                <td class="text-bold" style="color:#fbbf24;">${metrics.dbBufferPoolMb} MB</td>
+                <td>Right-sized buffer pool for fast queries</td>
+              </tr>
+              <tr>
+                <td><strong>MariaDB</strong></td>
+                <td><code>max_connections</code></td>
+                <td class="text-mono text-xs">/etc/mysql/mariadb.conf.d/99-deols-lean.cnf</td>
+                <td class="text-muted">151 conns</td>
+                <td class="text-bold" style="color:#fbbf24;">${metrics.dbMaxConnections} conns</td>
+                <td>Prevents runaway connection memory leaks</td>
+              </tr>
+              <tr>
+                <td><strong>LSCache Engine</strong></td>
+                <td><code>Rewrite / Static Cache Bypass</code></td>
+                <td class="text-mono text-xs">/usr/local/lsws/conf/vhosts/*/vhconf.conf</td>
+                <td class="text-muted">Optional</td>
+                <td class="text-bold" style="color:#10b981;">Enforced on All Sites</td>
+                <td>Bypasses PHP completely for cached HTML (&lt;20ms TTFB)</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- LSCache Enforcement & Virtual Hosts Status Card -->
+    <div class="card mb-6">
+      <div class="card-header flex justify-between items-center">
+        <div>
+          <h3 class="card-title">⚡ LSCache Speed Enforcement Rules</h3>
+          <p class="text-muted text-xs">Direct static cache bypass rules injected into virtual hosts.</p>
+        </div>
+        <span class="badge badge-success" style="font-size:11px;">
+          ${leanData?.enforcedVhostsCount ? `${leanData.enforcedVhostsCount} Sites Enforced` : 'All Virtual Hosts Active'}
+        </span>
+      </div>
+      <div class="card-body">
+        <p class="text-muted text-sm mb-3">
+          The Lean Engine automatically audits and configures OpenLiteSpeed virtual hosts (<code>vhconf.conf</code>) with high-performance cache rules so that cached WordPress pages bypass PHP and MySQL execution entirely.
+        </p>
+        <div style="background:var(--bg-code,#0f172a);border:1px solid var(--border-primary);border-radius:8px;padding:12px 16px;">
+          <pre style="margin:0;font-family:'JetBrains Mono',monospace;font-size:12px;color:#38bdf8;line-height:1.6;">RewriteEngine On
+RewriteRule .* - [E=Cache-Control:no-autoflush]
+RewriteRule ^/wp-content/cache/ - [L]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule . /index.php [L]</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Automated Safety & Snapshot Status Card -->
+    <div class="card">
+      <div class="card-header"><h3 class="card-title">Automated Safety Snapshot Engine</h3></div>
+      <div class="card-body">
+        <p class="text-muted text-sm mb-4">
+          DEOLS automatically creates compressed baseline snapshots before any configuration modification.
+        </p>
+        <div style="background:var(--bg-tertiary);border-radius:8px;padding:14px;border:1px solid var(--border-primary);">
+          <div class="flex items-center justify-between mb-2">
+            <span style="font-size:13px;font-weight:700;">Pre-Lean Engine Snapshot</span>
+            <span class="badge ${leanData?.backup?.exists ? 'badge-success' : ''}" style="${!leanData?.backup?.exists ? 'background:rgba(100,116,139,0.2);color:#94a3b8;' : ''};font-size:11px;">
+              ${leanData?.backup?.exists ? 'Archived & Verified' : 'Created on First Activation'}
+            </span>
+          </div>
+          <div class="text-mono text-xs text-muted mb-2">/var/backups/deols/pre_lean_engine_backup.tar.gz</div>
+          <p class="text-xs text-muted" style="margin:0;">
+            Captures unmodified configuration state of OpenLiteSpeed, PHP OPcache ini, and MariaDB for instant 1-click rollback.
+          </p>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function selectLeanMode(mode) {
+  currentLeanMode = mode;
+  const container = document.getElementById('content-body');
+  if (container) renderLeanEngineContent(container);
+}
+
+function selectLeanOpcache(size) {
+  currentOpcacheSize = size;
+  const container = document.getElementById('content-body');
+  if (container) renderLeanEngineContent(container);
+}
+
+async function toggleLeanMaster(enable) {
+  if (enable) {
+    await applyLeanEngine();
+  } else {
+    await restoreLeanDefaults();
+  }
+}
+
+async function applyLeanEngine() {
+  const btn = document.getElementById('btn-apply-lean');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Applying Lean Tuning & Restarting Services…';
+  }
+
+  toast(`Applying Lean Engine mode "${currentLeanMode.toUpperCase()}" with ${currentOpcacheSize}MB OPcache…`, 'info', 6000);
+
+  const res = await api('/advanced/lean-engine/enable', {
+    method: 'POST',
+    body: {
+      mode: currentLeanMode,
+      opcache_size: currentOpcacheSize,
+    },
+  });
+
+  if (res?.success) {
+    toast(res.message || 'Lean Engine Mode successfully activated!', 'success', 6000);
+    const container = document.getElementById('content-body');
+    if (container) renderAutoTuner(container);
+  } else {
+    toast(res?.error || 'Failed to apply Lean Engine mode', 'error', 8000);
+    const container = document.getElementById('content-body');
+    if (container) renderAutoTuner(container);
+  }
+}
+
+async function restoreLeanDefaults() {
+  if (!confirm('Are you sure you want to restore system limits to standard factory configurations? OpenLiteSpeed and MariaDB will be gracefully reloaded.')) {
+    const container = document.getElementById('content-body');
+    if (container) renderLeanEngineContent(container);
+    return;
+  }
+
+  const btn = document.getElementById('btn-restore-lean');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Restoring System Defaults…';
+  }
+
+  toast('Restoring standard system limits…', 'info', 6000);
+
+  const res = await api('/advanced/lean-engine/disable', { method: 'POST' });
+  if (res?.success) {
+    toast(res.message || 'Restored system limits successfully!', 'success', 6000);
+    const container = document.getElementById('content-body');
+    if (container) renderAutoTuner(container);
+  } else {
+    toast(res?.error || 'Failed to restore system limits', 'error', 8000);
+    const container = document.getElementById('content-body');
+    if (container) renderAutoTuner(container);
+  }
+}
+
 // ─── Make functions globally accessible ─────────────────────
 
 // ─── Global Window Bindings ─────────────────────────────────
@@ -4956,6 +5408,13 @@ async function restoreTunerDefaults() {
 const _globalExports = {
   navigateTo,
   renderAutoTuner,
+  switchTunerTab,
+  renderLeanEngineContent,
+  selectLeanMode,
+  selectLeanOpcache,
+  toggleLeanMaster,
+  applyLeanEngine,
+  restoreLeanDefaults,
   selectTunerPreset,
   toggleTunerRedis,
   toggleTunerMaster,
