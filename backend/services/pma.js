@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────
 // DEOLS phpMyAdmin Service
-// Automated Installation, Configuration, OLS Integration, and SSO
+// Automated Installation, Configuration, OLS Integration, and Auto-Login
 // ─────────────────────────────────────────────────────────────
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
@@ -48,205 +48,24 @@ export async function getPmaStatus() {
 }
 
 /**
- * Retrieve or generate persistent SSO secret key
+ * Ensure standard phpMyAdmin configuration (Cookie Auth)
  */
-export function getSsoSecret() {
-  const configDir = process.platform === 'linux' ? '/opt/deols/config' : join(config.dataDir, 'config');
-  try {
-    mkdirSync(configDir, { recursive: true });
-  } catch {}
+export function ensurePmaConfiguration(pmaPath) {
+  const cfgFile = join(pmaPath, 'config.inc.php');
+  const blowfishSecret = config.cookieSecret || generatePassword(32, false);
 
-  const keyFile = join(configDir, 'sso_secret.key');
-
-  if (existsSync(keyFile)) {
-    try {
-      const k = readFileSync(keyFile, 'utf-8').trim();
-      if (k.length >= 16) return k;
-    } catch {}
-  }
-
-  const newKey = config.jwtSecret || config.cookieSecret || generatePassword(32, false);
-  try {
-    writeFileSync(keyFile, newKey, { mode: 0o644 });
-    if (process.platform === 'linux') {
-      shell(`chmod 644 "${keyFile}" 2>/dev/null || true`);
-      shell(`chown nobody:nogroup "${keyFile}" 2>/dev/null || true`);
-    }
-  } catch {}
-
-  return newKey;
-}
-
-/**
- * Write the crash-proof autologin.php bridge script into target directory
- */
-export async function writeAutologinBridge(pmaPath) {
-  const bridgeContent = `<?php
-/**
- * DEOLS phpMyAdmin 1-Click Single Sign-On (SSO) Auto-Login Bridge
- */
-declare(strict_types=1);
-
-// Enable strict error logging to file while suppressing fatal 500 output to browser
-ini_set('display_errors', '0');
-ini_set('log_errors', '1');
-error_reporting(E_ALL);
-
-// Ensure session directory is writable
-if (!is_writable((string)session_save_path())) {
-    @session_save_path('/tmp');
-}
-
-// Ensure session starts under phpMyAdmin namespace
-ini_set('session.use_cookies', '1');
-ini_set('session.cookie_httponly', '1');
-ini_set('session.cookie_path', '/');
-session_name('DEOLSSession');
-if (session_status() === PHP_SESSION_NONE) {
-    @session_start();
-}
-
-$ssoToken = $_GET['sso'] ?? ($_POST['sso'] ?? null);
-
-if (!$ssoToken) {
-    http_response_code(400);
-    die('<div style="font-family:sans-serif;padding:24px;background:#1e293b;color:#f8fafc;border-radius:12px;max-width:400px;margin:60px auto;text-align:center;"><h3>DEOLS SSO</h3><p style="color:#94a3b8;">Missing SSO token payload. Please launch from the DEOLS dashboard.</p></div>');
-}
-
-try {
-    // 1. Read Secret Key used by DEOLS Node.js Backend
-    $keyFile = '/opt/deols/config/sso_secret.key';
-    if (!file_exists($keyFile)) {
-        $keyFile = '/opt/deols/data/config/sso_secret.key';
-    }
-    if (!file_exists($keyFile)) {
-        $keyFile = __DIR__ . '/sso_secret.key';
-    }
-
-    $encryptionKey = file_exists($keyFile) ? trim((string)@file_get_contents($keyFile)) : '';
-    if (empty($encryptionKey) && file_exists(__DIR__ . '/config.inc.php')) {
-        $cfg = (string)@file_get_contents(__DIR__ . '/config.inc.php');
-        if (preg_match("/\\\$cfg\\['blowfish_secret'\\]\\s*=\\s*['\"]([^'\"]+)['\"];/", $cfg, $m)) {
-            $encryptionKey = $m[1];
-        }
-    }
-    if (empty($encryptionKey)) {
-        $encryptionKey = 'deols_pma_secret_blowfish_32chars';
-    }
-
-    // 2. Decode Payload (Handling Base64 JSON, HMAC, and OpenSSL AES-256-CBC)
-    $cleanToken = str_replace(' ', '+', (string)$ssoToken);
-    $data = null;
-
-    // A. Direct Base64 / Base64URL JSON decode
-    $rawPayload = base64_decode(strtr($cleanToken, '-_', '+/'));
-    if ($rawPayload) {
-        $parsed = json_decode($rawPayload, true);
-        if ($parsed && (isset($parsed['user']) || isset($parsed['db_user']))) {
-            $data = $parsed;
-        }
-    }
-
-    // B. Dot-separated HMAC Token (data.sig)
-    if (!$data && strpos($cleanToken, '.') !== false) {
-        [$dataB64, $sig] = explode('.', $cleanToken, 2);
-        $expectedSig = rtrim(strtr(base64_encode(hash_hmac('sha256', $dataB64, $encryptionKey, true)), '+/', '-_'), '=');
-        if (hash_equals($expectedSig, rtrim($sig, '='))) {
-            $data = json_decode(base64_decode(strtr($dataB64, '-_', '+/')), true);
-        }
-    }
-
-    // C. AES-256-CBC (IV:Ciphertext)
-    if (!$data && $rawPayload && strpos($rawPayload, ':') !== false) {
-        $parts = explode(':', $rawPayload, 2);
-        if (count($parts) === 2) {
-            $iv = base64_decode($parts[0]);
-            $ciphertext = base64_decode($parts[1]);
-            $k = hash('sha256', $encryptionKey, true);
-            $decrypted = openssl_decrypt($ciphertext, 'aes-256-cbc', $k, OPENSSL_RAW_DATA, $iv);
-            if ($decrypted) {
-                $data = json_decode($decrypted, true);
-            }
-        }
-    }
-
-    if (!$data || (!isset($data['user']) && !isset($data['db_user']))) {
-        throw new Exception("Failed to decode database credentials or invalid token format.");
-    }
-
-    $dbUser = $data['user'] ?? ($data['db_user'] ?? '');
-    $dbPass = $data['pass'] ?? ($data['db_pass'] ?? '');
-    $dbName = $data['db'] ?? ($data['db_name'] ?? '');
-    $expires = $data['exp'] ?? ($data['expires'] ?? 0);
-
-    // 3. Verify Token Expiry (300-second TTL)
-    if ($expires > 0 && time() > (int)$expires) {
-        throw new Exception("SSO session link expired. Please click 'Open in phpMyAdmin' again.");
-    }
-
-    // 4. Set phpMyAdmin Single Sign-On (SSO) Session Keys
-    $_SESSION['PMA_single_signon_user'] = $dbUser;
-    $_SESSION['PMA_single_signon_password'] = $dbPass;
-    $_SESSION['PMA_single_signon_host'] = '127.0.0.1';
-    $_SESSION['PMA_single_signon_port'] = 3306;
-
-    // Commit session changes before redirect
-    session_write_close();
-
-    setcookie('DEOLSSession', session_id(), [
-        'expires' => 0,
-        'path' => '/',
-        'domain' => '',
-        'secure' => false,
-        'httponly' => true,
-        'samesite' => 'Lax'
-    ]);
-
-    // 5. Redirect cleanly into phpMyAdmin
-    $dest = 'index.php' . (!empty($dbName) ? '?route=/database/structure&db=' . urlencode($dbName) : '');
-    header('Location: ' . $dest);
-    exit;
-
-} catch (Exception $e) {
-    error_log("[DEOLS phpMyAdmin SSO Error] " . $e->getMessage());
-    http_response_code(401);
-    echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>phpMyAdmin SSO</title><style>body{background:#0f172a;color:#f8fafc;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.c{background:#1e293b;padding:32px;border-radius:12px;border:1px solid #ef4444;max-width:440px;text-align:center;}h3{color:#ef4444;margin-top:0;}p{color:#94a3b8;line-height:1.5;}</style></head><body><div class="c">';
-    echo '<h3>phpMyAdmin Auto-Login Failed</h3>';
-    echo '<p>' . htmlspecialchars($e->getMessage()) . '</p>';
-    echo '<a href="javascript:window.close()" style="display:inline-block;padding:10px 20px;background:#ef4444;color:#fff;text-decoration:none;border-radius:6px;font-weight:600;margin-top:12px;">Close Window</a>';
-    echo '</div></body></html>';
-    exit;
-}
-`;
-
-  try {
-    writeFileSync(join(pmaPath, 'autologin.php'), bridgeContent, 'utf-8');
-    if (process.platform === 'linux') {
-      await shell(`chmod 644 "${join(pmaPath, 'autologin.php')}" 2>/dev/null || true`);
-      await shell(`chown nobody:nogroup "${join(pmaPath, 'autologin.php')}" 2>/dev/null || true`);
-    }
-  } catch {}
-}
-
-/**
- * Synchronize all system phpMyAdmin configuration and autologin files
- */
-export async function syncAllPmaConfigs() {
-  const secret = getSsoSecret();
   const configContent = `<?php
 /**
- * phpMyAdmin SSO Configuration for DEOLS
+ * phpMyAdmin Configuration - Managed by DEOLS
+ * Standard Secure Cookie Authentication
  */
 declare(strict_types=1);
 
-$cfg['blowfish_secret'] = '${secret}';
+$cfg['blowfish_secret'] = '${blowfishSecret}';
 
 $i = 0;
 $i++;
-$cfg['Servers'][$i]['auth_type'] = 'signon';
-$cfg['Servers'][$i]['SignonSession'] = 'DEOLSSession';
-$cfg['Servers'][$i]['SignonURL'] = 'autologin.php';
-$cfg['Servers'][$i]['LogoutURL'] = '/';
+$cfg['Servers'][$i]['auth_type'] = 'cookie';
 $cfg['Servers'][$i]['host'] = '127.0.0.1';
 $cfg['Servers'][$i]['port'] = '3306';
 $cfg['Servers'][$i]['connect_type'] = 'tcp';
@@ -263,6 +82,81 @@ $cfg['DefaultLang'] = 'en';
 $cfg['ServerDefault'] = 1;
 `;
 
+  try {
+    writeFileSync(cfgFile, configContent, 'utf-8');
+    if (process.platform === 'linux') {
+      shell(`chmod 644 "${cfgFile}" 2>/dev/null || true`);
+      shell(`chown nobody:nogroup "${cfgFile}" 2>/dev/null || true`);
+    }
+  } catch {}
+}
+
+/**
+ * Write helper auto-submit script into phpMyAdmin directory
+ */
+export async function writeAutologinBridge(pmaPath) {
+  const bridgeContent = `<?php
+/**
+ * DEOLS phpMyAdmin Background Auto-Submit Helper
+ */
+declare(strict_types=1);
+
+$user = $_POST['pma_username'] ?? ($_GET['u'] ?? '');
+$pass = $_POST['pma_password'] ?? ($_GET['p'] ?? '');
+$db = $_POST['db'] ?? ($_GET['db'] ?? '');
+
+if (empty($user)) {
+    header('Location: index.php');
+    exit;
+}
+?>
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Opening phpMyAdmin…</title>
+  <style>
+    body { background: #0f172a; color: #f8fafc; font-family: system-ui, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+    .card { text-align: center; }
+    .spinner { width: 36px; height: 36px; border: 3px solid rgba(56,189,248,0.2); border-top-color: #38bdf8; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 16px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="spinner"></div>
+    <h3 style="margin:0 0 8px;">Connecting to phpMyAdmin…</h3>
+    <p style="color:#94a3b8;margin:0;font-size:0.9rem;">Logging into database in the background…</p>
+    <form id="pmaForm" method="POST" action="index.php" style="display:none;">
+      <input type="hidden" name="pma_username" value="<?php echo htmlspecialchars($user, ENT_QUOTES, 'UTF-8'); ?>">
+      <input type="hidden" name="pma_password" value="<?php echo htmlspecialchars($pass, ENT_QUOTES, 'UTF-8'); ?>">
+      <input type="hidden" name="server" value="1">
+      <?php if (!empty($db)): ?>
+      <input type="hidden" name="target" value="index.php?route=/database/structure&db=<?php echo urlencode($db); ?>">
+      <input type="hidden" name="db" value="<?php echo htmlspecialchars($db, ENT_QUOTES, 'UTF-8'); ?>">
+      <?php endif; ?>
+    </form>
+  </div>
+  <script>
+    document.getElementById('pmaForm').submit();
+  </script>
+</body>
+</html>
+`;
+
+  try {
+    writeFileSync(join(pmaPath, 'autologin.php'), bridgeContent, 'utf-8');
+    if (process.platform === 'linux') {
+      await shell(`chmod 644 "${join(pmaPath, 'autologin.php')}" 2>/dev/null || true`);
+      await shell(`chown nobody:nogroup "${join(pmaPath, 'autologin.php')}" 2>/dev/null || true`);
+    }
+  } catch {}
+}
+
+/**
+ * Synchronize all system phpMyAdmin configuration files
+ */
+export async function syncAllPmaConfigs() {
   const targetDirs = [
     '/opt/deols/phpmyadmin',
     '/usr/share/phpmyadmin',
@@ -276,25 +170,9 @@ $cfg['ServerDefault'] = 1;
 
   for (const dir of targetDirs) {
     if (existsSync(dir)) {
-      try {
-        writeFileSync(join(dir, 'config.inc.php'), configContent, 'utf-8');
-        await writeAutologinBridge(dir);
-        if (process.platform === 'linux') {
-          await shell(`chown -R nobody:nogroup "${dir}" 2>/dev/null || true`);
-          await shell(`chmod 644 "${join(dir, 'config.inc.php')}" "${join(dir, 'autologin.php')}" 2>/dev/null || true`);
-        }
-      } catch {}
+      ensurePmaConfiguration(dir);
+      await writeAutologinBridge(dir);
     }
-  }
-
-  // Also write conf.d/01-deols.php if /etc/phpmyadmin/conf.d exists
-  if (existsSync('/etc/phpmyadmin/conf.d')) {
-    try {
-      writeFileSync('/etc/phpmyadmin/conf.d/01-deols.php', configContent, 'utf-8');
-      if (process.platform === 'linux') {
-        await shell('chmod 644 /etc/phpmyadmin/conf.d/01-deols.php 2>/dev/null || true');
-      }
-    } catch {}
   }
 }
 
@@ -334,7 +212,7 @@ export async function installPhpMyAdmin() {
 
     return {
       success: true,
-      message: 'phpMyAdmin installed and configured with 1-Click SSO successfully!',
+      message: 'phpMyAdmin ready with 1-Click Database Auto-Login!',
       path: activePath,
     };
   } catch (err) {
@@ -352,7 +230,6 @@ export async function installPhpMyAdmin() {
 export async function ensureOlsPmaContext(pmaPath) {
   const pmaDir = pmaPath || getPmaPath();
 
-  // Synchronize all phpMyAdmin configs and bridges across system
   await syncAllPmaConfigs();
 
   if (process.platform === 'linux') {
@@ -503,7 +380,7 @@ export function getSiteDatabaseCredentials(dbName, domain) {
 }
 
 /**
- * Generate a 1-Click Single Sign-On (SSO) Auto-Login Token
+ * Generate 1-Click Database Auto-Login Payload and Credentials
  */
 export async function generatePmaSsoSession(dbName = null, domain = null, reqHost = null) {
   const pmaPath = getPmaPath();
@@ -515,10 +392,7 @@ export async function generatePmaSsoSession(dbName = null, domain = null, reqHos
   const pass = creds?.pass || '';
   const db = creds?.db || dbName || '';
 
-  const now = Math.floor(Date.now() / 1000);
-  const exp = now + 300; // 5 minutes TTL
-
-  // If on Linux, ensure user is permitted from %, 127.0.0.1, and localhost
+  // Ensure user is permitted in MariaDB from %, 127.0.0.1, and localhost
   if (process.platform === 'linux' && user && user !== 'root') {
     try {
       const safeDb = db ? db.replace(/[^a-zA-Z0-9_]/g, '') : '';
@@ -542,19 +416,6 @@ export async function generatePmaSsoSession(dbName = null, domain = null, reqHos
     } catch {}
   }
 
-  // Generate Base64 Payload
-  const payload = {
-    user,
-    pass,
-    db,
-    db_user: user,
-    db_pass: pass,
-    db_name: db,
-    exp,
-    expires: exp,
-  };
-  const ssoToken = Buffer.from(JSON.stringify(payload)).toString('base64url');
-
   // Determine server IP or Host
   let serverIp = '127.0.0.1';
   if (process.platform === 'linux') {
@@ -568,16 +429,15 @@ export async function generatePmaSsoSession(dbName = null, domain = null, reqHos
     ? reqHost
     : (serverIp !== '127.0.0.1' ? serverIp : '127.0.0.1');
 
-  const ssoUrl = `http://${host}/phpmyadmin/autologin.php?sso=${ssoToken}`;
+  const actionUrl = `http://${host}/phpmyadmin/index.php`;
 
   return {
     success: true,
-    token: ssoToken,
-    ssoEnc: ssoToken,
-    ssoUrl,
     user,
+    pass,
     db,
     serverIp: host,
+    actionUrl,
   };
 }
 

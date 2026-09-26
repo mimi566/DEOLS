@@ -2364,28 +2364,19 @@ async function dropDbUser(user, host) {
 // ─── phpMyAdmin Integration ─────────────────────────────────
 
 async function openPhpMyAdmin(dbName = '', domain = '') {
-  toast('Launching phpMyAdmin with 1-Click Auto-Login…', 'info', 2500);
-
-  // Pre-open tab to prevent popup blocker from blocking async redirection
-  const win = window.open('', '_blank');
-  if (win) {
-    try {
-      win.document.write(`<!DOCTYPE html><html><head><title>Opening phpMyAdmin…</title><style>body{background:#0f172a;color:#f8fafc;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}div{text-align:center;}</style></head><body><div><div style="font-size:3rem;margin-bottom:12px;">🗄️</div><h2 style="font-size:1.2rem;margin-bottom:8px;">Connecting to phpMyAdmin…</h2><p style="color:#94a3b8;font-size:0.9rem;">Authenticating single sign-on session…</p></div></body></html>`);
-    } catch {}
-  }
+  toast('Opening phpMyAdmin with Auto-Login…', 'info', 2500);
 
   try {
     const status = await api('/databases/pma/status');
 
     if (!status || !status.installed) {
-      if (win) win.close();
       showModal('Install phpMyAdmin', `
         <div class="flex flex-col gap-4">
           <div style="text-align:center;padding:12px 0;">
             <div style="font-size:3.5rem;margin-bottom:12px;">🗄️</div>
             <h3 style="font-size:1.2rem;font-weight:700;margin-bottom:8px;">phpMyAdmin Database Manager</h3>
             <p class="text-muted" style="font-size:0.9rem;line-height:1.5;">
-              phpMyAdmin is not installed on this server yet. DEOLS can automatically download, secure with blowfish encryption, and configure 1-Click Single Sign-On for OpenLiteSpeed.
+              phpMyAdmin is not installed on this server yet. DEOLS can automatically download and configure it for OpenLiteSpeed.
             </p>
           </div>
           <div class="flex justify-end gap-3 pt-3" style="border-top:1px solid var(--border-primary);">
@@ -2399,30 +2390,48 @@ async function openPhpMyAdmin(dbName = '', domain = '') {
       return;
     }
 
-    // Request 1-Click SSO token for instant auto-login
-    const ssoRes = await api('/databases/pma/sso-token', {
+    // Retrieve database credentials for direct background login
+    const res = await api('/databases/pma/sso-token', {
       method: 'POST',
       body: { dbName, domain },
     });
 
-    if (ssoRes?.ssoUrl) {
-      if (win) win.location.href = ssoRes.ssoUrl;
-      else window.open(ssoRes.ssoUrl, '_blank');
-    } else {
-      // Fallback to server IP direct URL
-      const serverHost = window.location.hostname && window.location.hostname !== 'localhost'
-        ? window.location.hostname
-        : (status.serverIp && status.serverIp !== '127.0.0.1' ? status.serverIp : '127.0.0.1');
+    const serverHost = window.location.hostname && window.location.hostname !== 'localhost'
+      ? window.location.hostname
+      : (status.serverIp && status.serverIp !== '127.0.0.1' ? status.serverIp : '127.0.0.1');
 
-      let targetUrl = `http://${serverHost}/phpmyadmin/`;
-      if (dbName) {
-        targetUrl += `index.php?route=/database/structure&db=${encodeURIComponent(dbName)}`;
-      }
-      if (win) win.location.href = targetUrl;
-      else window.open(targetUrl, '_blank');
+    const pmaUrl = `http://${serverHost}/phpmyadmin/index.php`;
+    const user = res?.user || (domain ? 'u_' + domain.replace(/[^a-z0-9]/gi, '').substring(0, 10) : 'root');
+    const pass = res?.pass || '';
+    const targetDb = res?.db || dbName || '';
+
+    // Create a dynamic form and auto-submit with credentials
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = pmaUrl;
+    form.target = '_blank';
+    form.style.display = 'none';
+
+    const addInput = (name, val) => {
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = name;
+      input.value = val;
+      form.appendChild(input);
+    };
+
+    addInput('pma_username', user);
+    addInput('pma_password', pass);
+    addInput('server', '1');
+    if (targetDb) {
+      addInput('target', `index.php?route=/database/structure&db=${encodeURIComponent(targetDb)}`);
+      addInput('db', targetDb);
     }
+
+    document.body.appendChild(form);
+    form.submit();
+    setTimeout(() => form.remove(), 1000);
   } catch (err) {
-    if (win) win.close();
     toast('Failed to launch phpMyAdmin: ' + (err.message || 'Error'), 'error');
   }
 }

@@ -331,9 +331,9 @@ WantedBy=multi-user.target
   assert(pmaLaunch.url.includes(`db=${testDbName}`), `phpMyAdmin direct database route encoded: ${pmaLaunch.url}`);
 
   const ssoRes = await generatePmaSsoSession(testDbName, cleanDomain, '127.0.0.1');
-  assert(ssoRes.success === true, 'phpMyAdmin SSO session generated successfully');
-  assert(typeof ssoRes.token === 'string' && ssoRes.token.length >= 24, `SSO token created with sufficient entropy (${ssoRes.token.substring(0, 8)}…)`);
-  assert(ssoRes.ssoUrl.includes('/phpmyadmin/autologin.php?') && ssoRes.ssoUrl.includes('sso='), `SSO launch URL properly routed with encrypted stateless payload: ${ssoRes.ssoUrl.substring(0, 80)}…`);
+  assert(ssoRes.success === true, 'phpMyAdmin Auto-Login session generated successfully');
+  assert(typeof ssoRes.user === 'string' && ssoRes.user.length > 0, `Auto-Login user resolved (${ssoRes.user})`);
+  assert(ssoRes.actionUrl.includes('/phpmyadmin/index.php'), `Auto-Login action URL targeted to phpMyAdmin: ${ssoRes.actionUrl}`);
 
   // Cleanup sandbox
   try {
