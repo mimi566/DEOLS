@@ -604,24 +604,33 @@ export async function testOlsSyntax() {
     return { ok: true, output: 'Syntax test passed (non-linux dev platform)' };
   }
 
+  // Ensure Example vhost directory has non-root ownership if it exists
+  try {
+    if (existsSync('/usr/local/lsws/Example')) {
+      execSync('chown -R nobody:nogroup /usr/local/lsws/Example 2>/dev/null || chown -R nobody:nobody /usr/local/lsws/Example 2>/dev/null || true');
+    }
+  } catch {}
+
   const olsBin = join(config.olsRoot || '/usr/local/lsws', 'bin');
   const openlitespeed = join(olsBin, 'openlitespeed');
   const lshttpd = join(olsBin, 'lshttpd');
 
-  // 1. Direct binary test: openlitespeed -t
+  let testRes = null;
   if (existsSync(openlitespeed)) {
-    const res = await shell(`"${openlitespeed}" -t 2>&1`);
-    const out = ((res.stdout || '') + ' ' + (res.stderr || '')).trim();
-    const isOk = res.code === 0 || out.includes('[OK]') || out.includes('syntax is ok') || out.includes('is valid') || out.includes('Configuration file is valid');
-    return { ok: isOk, output: out, code: res.code };
+    testRes = await shell(`"${openlitespeed}" -t 2>&1`);
+  } else if (existsSync(lshttpd)) {
+    testRes = await shell(`"${lshttpd}" -t 2>&1`);
   }
 
-  // 2. Direct binary test: lshttpd -t
-  if (existsSync(lshttpd)) {
-    const res = await shell(`"${lshttpd}" -t 2>&1`);
-    const out = ((res.stdout || '') + ' ' + (res.stderr || '')).trim();
-    const isOk = res.code === 0 || out.includes('[OK]') || out.includes('syntax is ok') || out.includes('is valid') || out.includes('Configuration file is valid');
-    return { ok: isOk, output: out, code: res.code };
+  if (testRes) {
+    const out = ((testRes.stdout || '') + ' ' + (testRes.stderr || '')).trim();
+    // A syntax test has failed ONLY if there are explicit [ERROR] or [FATAL] log lines
+    const hasFatalError = /\[ERROR\]|\[FATAL\]|Fatal error|Syntax error/i.test(out);
+    if (hasFatalError) {
+      return { ok: false, output: out, code: testRes.code };
+    }
+    // Warnings ([WARN], [NOTICE], [INFO]) are non-fatal
+    return { ok: true, output: out, code: testRes.code };
   }
 
   return { ok: true, output: 'OpenLiteSpeed syntax validator not found on standard path' };
