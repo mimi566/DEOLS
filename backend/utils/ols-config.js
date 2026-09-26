@@ -321,14 +321,16 @@ vhssl {
 
 /**
  * Generate CyberPanel-compatible vhconf.conf for OpenLiteSpeed WebAdmin
+ * with Multi-Tenant User Isolation (extUser, extGroup, and cgroups v2)
  */
-export function generateCyberpanelVhConf(domain, docRoot, logsDir, phpVersion = '83', enableWildcard = false) {
+export function generateCyberpanelVhConf(domain, docRoot, logsDir, phpVersion = '83', enableWildcard = false, systemUser = null) {
   const phpSuffix = phpVersion || '83';
   const wildcardAliases = enableWildcard ? `, *.${domain}` : '';
+  const runUser = systemUser || 'nobody';
 
   return `# ─────────────────────────────────────────────────────────────
 # OpenLiteSpeed Virtual Host Configuration for ${domain}
-# Managed by DEOLS (CyberPanel-compatible architecture)
+# Managed by DEOLS (Multi-Tenant User Isolation & cgroups v2)
 # ─────────────────────────────────────────────────────────────
 
 docRoot                   ${docRoot}
@@ -337,7 +339,7 @@ vhAliases                 www.${domain}${wildcardAliases}
 adminEmails               admin@${domain}
 enableGzip                1
 enableBr                  1
-cgroups                   0
+cgroups                   1
 
 index {
   useServer               0
@@ -379,6 +381,8 @@ extprocessor lsphp${phpSuffix} {
   memHardLimit            2047M
   procSoftLimit           1400
   procHardLimit           1500
+  extUser                 ${runUser}
+  extGroup                www-data
 }
 
 rewrite {
@@ -579,7 +583,7 @@ export function syncAllVirtualHosts() {
       const docRoot = site.docRoot || join(config.webRoot, site.domain, 'public_html');
       const logsDir = join(config.webRoot, site.domain, 'logs');
       if (!existsSync(logsDir)) mkdirSync(logsDir, { recursive: true });
-      const conf = generateCyberpanelVhConf(site.domain, docRoot, logsDir, site.phpVersion || '83', site.wildcard);
+      const conf = generateCyberpanelVhConf(site.domain, docRoot, logsDir, site.phpVersion || '83', site.wildcard, site.systemUser);
       writeFileSync(vhconfPath, conf);
     }
 

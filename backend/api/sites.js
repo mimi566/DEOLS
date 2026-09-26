@@ -2,8 +2,9 @@
 // DEOLS Sites API — WordPress Site Provisioning & Management
 // ─────────────────────────────────────────────────────────────
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
+import os from 'os';
 import { config } from '../config.js';
 import { shell, run, sanitizeDomain, isValidDomain } from '../utils/shell.js';
 import {
@@ -14,6 +15,15 @@ import {
   getVirtualHostConfig,
   updateVirtualHostSSL,
 } from '../utils/ols-config.js';
+import {
+  generateSystemUsername,
+  ensureSystemUser,
+  enforceDirectorySecurity,
+  createOrUpdateSystemdSlice,
+  applyDiskQuota,
+  getSystemQuotaStatus,
+  getRealTimeUserMetrics,
+} from '../services/isolation.js';
 
 const SITES_FILE = join(config.dataDir, 'sites.json');
 
@@ -207,19 +217,29 @@ require_once ABSPATH . 'wp-settings.php';
         } catch {}
       }
 
-      // 9. Set correct file permissions
-      await shell(`chown -R nobody:nogroup "${siteRoot}" 2>/dev/null || true`);
-      await shell(`find "${docRoot}" -type d -exec chmod 755 {} \\; 2>/dev/null || true`);
-      await shell(`find "${docRoot}" -type f -exec chmod 644 {} \\; 2>/dev/null || true`);
+      // 9. Set up multi-tenant user isolation & systemd cgroups slice
+      const systemUser = generateSystemUsername(cleanDomain);
+      await ensureSystemUser(systemUser, cleanDomain);
+      const defaultLimits = {
+        cpuPercent: 100,
+        ramMb: 512,
+        ramMaxMb: 768,
+        diskMb: 5000,
+        tasksMax: 150,
+        updatedAt: new Date().toISOString(),
+      };
+      await createOrUpdateSystemdSlice(systemUser, defaultLimits);
+      await applyDiskQuota(systemUser, defaultLimits.diskMb);
+      await enforceDirectorySecurity(cleanDomain, systemUser);
 
       // 10. Ensure OLS dual listeners (Default :80 and DefaultHTTPS :443) exist
       ensureOlsListeners();
 
-      // 11. Generate CyberPanel-compatible OLS Virtual Host config with isolated PHP socket
+      // 11. Generate CyberPanel-compatible OLS Virtual Host config with isolated PHP socket & extUser
       const vhostConfDir = join(config.vhostsDir, cleanDomain);
       mkdirSync(vhostConfDir, { recursive: true });
 
-      const vhconfContent = generateCyberpanelVhConf(cleanDomain, docRoot, logsDir, phpVersion, enableWildcard);
+      const vhconfContent = generateCyberpanelVhConf(cleanDomain, docRoot, logsDir, phpVersion, enableWildcard, systemUser);
       writeFileSync(join(vhostConfDir, 'vhconf.conf'), vhconfContent);
 
       // 12. Add Virtual Host to OLS and map to both port 80 and port 443 listeners
@@ -232,6 +252,7 @@ require_once ABSPATH . 'wp-settings.php';
       const site = {
         id: crypto.randomUUID(),
         domain: cleanDomain,
+        systemUser,
         docRoot,
         phpVersion,
         dbName,
@@ -240,6 +261,7 @@ require_once ABSPATH . 'wp-settings.php';
         wildcard: enableWildcard,
         lsCache: enableLSCache,
         status: 'active',
+        limits: defaultLimits,
         createdAt: new Date().toISOString(),
         adminUser: siteAdminUser,
         adminPassword: siteAdminPass,
@@ -280,8 +302,23 @@ require_once ABSPATH . 'wp-settings.php';
     if (idx === -1) return reply.code(404).send({ error: 'Site not found' });
 
     const site = sites[idx];
+    const systemUser = site.systemUser || generateSystemUsername(domain);
 
     try {
+      // Remove Systemd Slice file
+      const slicePath = process.platform === 'linux'
+        ? `/etc/systemd/system/deols-user-${systemUser}.slice`
+        : join(config.dataDir, 'systemd-slices', `deols-user-${systemUser}.slice`);
+      if (existsSync(slicePath)) {
+        try {
+          unlinkSync(slicePath);
+          if (process.platform === 'linux') {
+            await shell(`systemctl stop deols-user-${systemUser}.slice 2>/dev/null || true`);
+            await shell('systemctl daemon-reload 2>/dev/null || true');
+          }
+        } catch {}
+      }
+
       // Remove OLS vhost config directory
       await shell(`rm -rf ${join(config.vhostsDir, domain)}`);
       // Unmap from all OLS listeners and remove virtual host definition from httpd_config.conf
@@ -312,18 +349,121 @@ require_once ABSPATH . 'wp-settings.php';
     }
   });
 
+  // ─── Get Site Resource Limits & Active cgroup Metrics ───
+  app.get('/:domain/limits', async (request, reply) => {
+    const { domain } = request.params;
+    const sites = loadSites();
+    const site = sites.find((s) => s.domain === domain);
+    if (!site) return reply.code(404).send({ error: 'Site not found' });
+
+    const systemUser = site.systemUser || generateSystemUsername(domain);
+    const limits = site.limits || {
+      cpuPercent: 100,
+      ramMb: 512,
+      ramMaxMb: 768,
+      diskMb: 5000,
+      tasksMax: 150,
+      updatedAt: site.createdAt || new Date().toISOString(),
+    };
+
+    const metrics = await getRealTimeUserMetrics(systemUser, domain);
+
+    return {
+      success: true,
+      domain,
+      systemUser,
+      limits,
+      metrics,
+    };
+  });
+
+  // ─── Update Site Resource Limits (CPU, RAM, Disk Quotas) ─
+  app.post('/:domain/limits', async (request, reply) => {
+    const { domain } = request.params;
+    const body = request.body || {};
+
+    const sites = loadSites();
+    const idx = sites.findIndex((s) => s.domain === domain);
+    if (idx === -1) return reply.code(404).send({ error: 'Site not found' });
+
+    const site = sites[idx];
+    const systemUser = site.systemUser || generateSystemUsername(domain);
+    site.systemUser = systemUser;
+
+    // Parse limits supporting both camelCase and snake_case
+    const cpuPercent = Math.max(10, Math.min(400, parseInt(body.cpuPercent || body.cpu_percent || 100, 10)));
+    const ramMb = Math.max(128, Math.min(65536, parseInt(body.ramMb || body.ram_mb || 512, 10)));
+    const ramMaxMb = Math.max(ramMb, Math.min(65536, parseInt(body.ramMaxMb || body.ram_max_mb || Math.round(ramMb * 1.25), 10)));
+    const diskMb = Math.max(256, Math.min(1048576, parseInt(body.diskMb || body.disk_mb || 5000, 10)));
+    const tasksMax = Math.max(20, Math.min(1000, parseInt(body.tasksMax || body.tasks_max || 150, 10)));
+
+    const newLimits = {
+      cpuPercent,
+      ramMb,
+      ramMaxMb,
+      diskMb,
+      tasksMax,
+      updatedAt: new Date().toISOString(),
+    };
+
+    try {
+      // 1. Ensure user exists
+      await ensureSystemUser(systemUser, domain);
+
+      // 2. Update Systemd Slice
+      await createOrUpdateSystemdSlice(systemUser, newLimits);
+
+      // 3. Update Linux ext4 Quotas
+      await applyDiskQuota(systemUser, diskMb);
+
+      // 4. Enforce POSIX directory security
+      await enforceDirectorySecurity(domain, systemUser);
+
+      // 5. Save updated limits in site metadata
+      site.limits = newLimits;
+      sites[idx] = site;
+      saveSites(sites);
+
+      // 6. Gracefully reload OLS
+      const lswsctrl = config.bin?.lswsctrl || join(config.olsRoot, 'bin', 'lswsctrl');
+      if (existsSync(lswsctrl)) {
+        await shell(`"${lswsctrl}" reload 2>/dev/null || true`);
+      } else {
+        await shell('systemctl reload lsws 2>/dev/null || true');
+      }
+
+      const metrics = await getRealTimeUserMetrics(systemUser, domain);
+
+      return {
+        success: true,
+        message: `Resource limits and cgroups slice updated for '${domain}'!`,
+        domain,
+        systemUser,
+        limits: newLimits,
+        metrics,
+      };
+    } catch (err) {
+      return reply.code(500).send({
+        error: 'Failed to update resource limits',
+        details: err.message,
+      });
+    }
+  });
+
   // ─── Repair Permissions ─────────────────────────────────
   app.post('/:domain/repair-permissions', async (request, reply) => {
     const sites = loadSites();
     const site = sites.find((s) => s.domain === request.params.domain);
     if (!site) return reply.code(404).send({ error: 'Site not found' });
 
-    await shell(`chown -R nobody:nogroup ${site.docRoot}`);
-    await shell(`find ${site.docRoot} -type d -exec chmod 755 {} \\;`);
-    await shell(`find ${site.docRoot} -type f -exec chmod 644 {} \\;`);
-    await shell(`chmod 600 ${join(site.docRoot, 'wp-config.php')}`);
+    const systemUser = site.systemUser || generateSystemUsername(site.domain);
+    await enforceDirectorySecurity(site.domain, systemUser);
 
-    return { success: true, message: 'Permissions repaired' };
+    if (existsSync(join(site.docRoot, 'wp-config.php'))) {
+      await shell(`chmod 600 "${join(site.docRoot, 'wp-config.php')}" 2>/dev/null || true`);
+    }
+
+    return { success: true, message: `Permissions repaired for user '${systemUser}'` };
   });
 
   // ─── Toggle Site Status ────────────────────────────────

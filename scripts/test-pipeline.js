@@ -247,7 +247,7 @@ WantedBy=multi-user.target
     invalidRejected = true;
   }
   // ─── STEP 9: System Memory Metrics & /proc/meminfo Parser ──
-  console.log('\n\x1b[33m[9/9] Testing System Memory Metrics & /proc/meminfo Parser...\x1b[0m');
+  console.log('\n\x1b[33m[9/10] Testing System Memory Metrics & /proc/meminfo Parser...\x1b[0m');
   const { getSystemMemoryMetrics } = await import('../backend/api/system.js');
   const memMetrics = getSystemMemoryMetrics();
 
@@ -256,6 +256,57 @@ WantedBy=multi-user.target
   assert(typeof memMetrics.available === 'number' && memMetrics.available > 0, `Available memory reported: ${memMetrics.availableMB} MB`);
   assert(memMetrics.usedPercentage >= 0 && memMetrics.usedPercentage <= 100, `Memory usage percentage valid: ${memMetrics.usedPercentage}%`);
   assert(memMetrics.usedMB <= memMetrics.totalMB, 'Used memory does not exceed total memory');
+
+  // ─── STEP 10: Multi-Tenant User Isolation & Resource Limits (cgroups v2 + Systemd + Quotas) ──
+  console.log('\n\x1b[33m[10/10] Testing Multi-Tenant User Isolation & Systemd Slices...\x1b[0m');
+  const {
+    generateSystemUsername,
+    createOrUpdateSystemdSlice,
+    applyDiskQuota,
+    getSystemQuotaStatus,
+    getRealTimeUserMetrics,
+  } = await import('../backend/services/isolation.js');
+
+  // 1. Test POSIX username generation
+  const testUser = generateSystemUsername(cleanDomain);
+  assert(testUser.startsWith('u_'), `Isolated POSIX username generated: ${testUser}`);
+  assert(testUser.length <= 14, `Username conforms to 14-char Linux user limit (Length: ${testUser.length})`);
+  assert(!/[^a-z0-9_]/.test(testUser), 'Username contains only valid POSIX characters');
+
+  // 2. Test Systemd Slice file generation
+  const sliceLimits = {
+    cpuPercent: 150,
+    ramMb: 1024,
+    ramMaxMb: 1536,
+    diskMb: 10000,
+    tasksMax: 200,
+  };
+  const sliceResult = await createOrUpdateSystemdSlice(testUser, sliceLimits);
+  assert(existsSync(sliceResult.slicePath), `Systemd slice created: ${sliceResult.slicePath}`);
+
+  const sliceContent = readFileSync(sliceResult.slicePath, 'utf-8');
+  assert(sliceContent.includes('CPUQuota=150%'), 'Slice contains CPUQuota=150%');
+  assert(sliceContent.includes('MemoryHigh=1024M'), 'Slice contains MemoryHigh=1024M (Soft Limit)');
+  assert(sliceContent.includes('MemoryMax=1536M'), 'Slice contains MemoryMax=1536M (Isolated Hard OOM Limit)');
+  assert(sliceContent.includes('TasksMax=200'), 'Slice contains TasksMax=200 (Anti-Fork Bomb)');
+
+  // 3. Test Disk Quota calculation
+  const quotaResult = await applyDiskQuota(testUser, 10000);
+  assert(quotaResult.limitMb === 10000, `Storage limit applied: ${quotaResult.limitMb} MB`);
+  assert(quotaResult.hardLimitKb === 10240000, `Hard limit set to 10240000 KB (100%)`);
+  assert(quotaResult.softLimitKb === 9216000, `Soft limit set to 9216000 KB (90% warning threshold)`);
+
+  // 4. Test System Quota Status
+  const qStatus = await getSystemQuotaStatus();
+  assert(typeof qStatus.quotaEnabled === 'boolean', `System quota status checked (active: ${qStatus.quotaEnabled})`);
+  assert(typeof qStatus.details === 'string', `Quota details reported: ${qStatus.details}`);
+
+  // 5. Test Real-Time User Metrics Collector
+  const userMetrics = await getRealTimeUserMetrics(testUser, cleanDomain);
+  assert(typeof userMetrics.cpuPercent === 'number', `Live CPU metric collected: ${userMetrics.cpuPercent}%`);
+  assert(typeof userMetrics.ramMb === 'number', `Live RAM metric collected: ${userMetrics.ramMb} MB`);
+  assert(typeof userMetrics.diskMb === 'number', `Live Disk metric collected: ${userMetrics.diskMb} MB`);
+  assert(typeof userMetrics.activeTasks === 'number', `Live Tasks metric collected: ${userMetrics.activeTasks}`);
 
   // Cleanup sandbox
   try {

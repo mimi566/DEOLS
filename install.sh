@@ -57,6 +57,7 @@ apt-get install -y -qq \
   curl wget gnupg2 ca-certificates lsb-release apt-transport-https \
   software-properties-common git unzip zip tar \
   ufw fail2ban redis-server \
+  quota quotatool \
   build-essential python3 python3-venv python3-pip \
   certbot python3-certbot-dns-cloudflare
 

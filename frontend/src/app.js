@@ -1079,6 +1079,7 @@ async function renderSiteManage(container, domain) {
       <!-- Navigation Tabs (Matches Image 2) -->
       <div class="site-tabs-nav" id="site-manage-tabs">
         <button class="site-tab-btn active" data-tab="settings">Settings</button>
+        <button class="site-tab-btn" data-tab="limits">⚡ Resource Limits</button>
         <button class="site-tab-btn" data-tab="vhost">Vhost</button>
         <button class="site-tab-btn" data-tab="databases">Databases</button>
         <button class="site-tab-btn" data-tab="cache">OLS Cache</button>
@@ -1164,7 +1165,7 @@ async function renderSiteManage(container, domain) {
           </div>
           <div class="flex gap-3" style="flex-wrap:wrap;">
             <button class="btn btn-secondary btn-sm" onclick="repairPerms('${escapeHTML(domain)}')">
-              🛠️ Repair Permissions (nobody:nogroup)
+              🛠️ Repair Permissions (750 / Isolated)
             </button>
             <button class="btn btn-secondary btn-sm" onclick="purgeSiteCache('${escapeHTML(domain)}')">
               ⚡ Purge LiteSpeed Cache (LSCache)
@@ -1175,6 +1176,225 @@ async function renderSiteManage(container, domain) {
             <button class="btn btn-secondary btn-sm" onclick="repairSiteDatabase('${escapeHTML(domain)}')">
               🗄️ Repair Database
             </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. RESOURCE LIMITS & USER ISOLATION TAB PANE -->
+      <div class="site-tab-pane" id="pane-limits">
+        <!-- Live Real-Time Resource Gauges -->
+        <div class="site-manage-card">
+          <div class="site-manage-card-header">
+            <div>
+              <h3 class="site-manage-card-title">Live Resource Consumption (cgroups v2 + Quotas)</h3>
+              <p class="text-muted text-xs" style="margin-top:2px;">
+                Kernel-enforced hardware isolation boundary for <strong>${escapeHTML(siteUser)}</strong>
+              </p>
+            </div>
+            <div class="flex gap-2">
+              <button class="btn btn-secondary btn-sm" onclick="loadSiteLimits('${escapeHTML(domain)}')">
+                🔄 Refresh Live Metrics
+              </button>
+            </div>
+          </div>
+          
+          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));gap:16px;margin-top:10px;">
+            <!-- CPU Gauge -->
+            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;border:1px solid var(--border-primary);">
+              <div class="flex justify-between items-center mb-2">
+                <span style="font-size:0.85rem;font-weight:600;color:var(--text-secondary);">CPU Utilization</span>
+                <span id="metric-cpu-text" class="text-mono font-bold" style="color:var(--accent-primary);font-size:0.9rem;">0.0% / 100%</span>
+              </div>
+              <div style="background:rgba(255,255,255,0.06);border-radius:6px;height:8px;overflow:hidden;margin-bottom:6px;">
+                <div id="metric-cpu-bar" style="background:var(--accent-gradient);height:100%;width:0%;transition:width 0.4s ease;"></div>
+              </div>
+              <div class="flex justify-between text-xs text-muted">
+                <span>Core Limit: <strong id="metric-cpu-limit-label">1.0 Core</strong></span>
+                <span id="metric-cpu-status">Normal</span>
+              </div>
+            </div>
+
+            <!-- RAM Gauge -->
+            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;border:1px solid var(--border-primary);">
+              <div class="flex justify-between items-center mb-2">
+                <span style="font-size:0.85rem;font-weight:600;color:var(--text-secondary);">Memory (RAM)</span>
+                <span id="metric-ram-text" class="text-mono font-bold" style="color:var(--success);font-size:0.9rem;">0 MB / 512 MB</span>
+              </div>
+              <div style="background:rgba(255,255,255,0.06);border-radius:6px;height:8px;overflow:hidden;margin-bottom:6px;">
+                <div id="metric-ram-bar" style="background:var(--success);height:100%;width:0%;transition:width 0.4s ease;"></div>
+              </div>
+              <div class="flex justify-between text-xs text-muted">
+                <span>Hard Cap (Max): <strong id="metric-ram-max-label">768 MB</strong></span>
+                <span id="metric-ram-status">Safe</span>
+              </div>
+            </div>
+
+            <!-- Disk Quota Gauge -->
+            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;border:1px solid var(--border-primary);">
+              <div class="flex justify-between items-center mb-2">
+                <span style="font-size:0.85rem;font-weight:600;color:var(--text-secondary);">Storage Quota</span>
+                <span id="metric-disk-text" class="text-mono font-bold" style="color:var(--info);font-size:0.9rem;">0 MB / 5000 MB</span>
+              </div>
+              <div style="background:rgba(255,255,255,0.06);border-radius:6px;height:8px;overflow:hidden;margin-bottom:6px;">
+                <div id="metric-disk-bar" style="background:var(--info);height:100%;width:0%;transition:width 0.4s ease;"></div>
+              </div>
+              <div class="flex justify-between text-xs text-muted">
+                <span>ext4 Quota</span>
+                <span id="metric-disk-status">90% Soft / 100% Hard</span>
+              </div>
+            </div>
+
+            <!-- Tasks / Processes Gauge -->
+            <div style="background:var(--bg-secondary);padding:16px;border-radius:10px;border:1px solid var(--border-primary);">
+              <div class="flex justify-between items-center mb-2">
+                <span style="font-size:0.85rem;font-weight:600;color:var(--text-secondary);">Active Tasks</span>
+                <span id="metric-tasks-text" class="text-mono font-bold" style="color:var(--warning);font-size:0.9rem;">0 / 150</span>
+              </div>
+              <div style="background:rgba(255,255,255,0.06);border-radius:6px;height:8px;overflow:hidden;margin-bottom:6px;">
+                <div id="metric-tasks-bar" style="background:var(--warning);height:100%;width:0%;transition:width 0.4s ease;"></div>
+              </div>
+              <div class="flex justify-between text-xs text-muted">
+                <span>Anti-Fork Bomb</span>
+                <span>cgroup TasksMax</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Resource Quota Allocation Controls Card -->
+        <div class="site-manage-card">
+          <div class="site-manage-card-header">
+            <h3 class="site-manage-card-title">Configure Resource Allocations & Quotas</h3>
+          </div>
+          <div class="flex flex-col gap-5">
+            <!-- CPU Slider -->
+            <div class="form-group">
+              <div class="flex justify-between items-center mb-2">
+                <label class="form-label" style="font-weight:600;margin:0;">
+                  CPU Core Allocation (CPUQuota)
+                </label>
+                <div class="flex items-center gap-2">
+                  <input type="number" id="limit-input-cpu" class="input" style="width:90px;text-align:right;" min="10" max="400" step="10" value="100" oninput="syncLimitSlider('cpu', this.value)">
+                  <span class="text-mono font-bold text-sm">%</span>
+                  <span id="limit-cpu-cores-text" class="badge badge-neutral" style="font-size:11px;">1.0 Core</span>
+                </div>
+              </div>
+              <input type="range" id="limit-slider-cpu" min="10" max="400" step="10" value="100" style="width:100%;accent-color:var(--accent-primary);cursor:pointer;" oninput="syncLimitInput('cpu', this.value)">
+              <div class="flex justify-between text-xs text-muted mt-1">
+                <span>10% (0.1 Core)</span>
+                <span>100% (1 Full Core)</span>
+                <span>200% (2 Cores)</span>
+                <span>400% (4 Cores)</span>
+              </div>
+            </div>
+
+            <!-- RAM Slider -->
+            <div class="form-group">
+              <div class="flex justify-between items-center mb-2">
+                <label class="form-label" style="font-weight:600;margin:0;">
+                  RAM Soft Limit (MemoryHigh — Page Cache Reclaim)
+                </label>
+                <div class="flex items-center gap-2">
+                  <input type="number" id="limit-input-ram" class="input" style="width:100px;text-align:right;" min="128" max="16384" step="64" value="512" oninput="syncLimitSlider('ram', this.value)">
+                  <span class="text-mono font-bold text-sm">MB</span>
+                </div>
+              </div>
+              <input type="range" id="limit-slider-ram" min="128" max="8192" step="64" value="512" style="width:100%;accent-color:var(--success);cursor:pointer;" oninput="syncLimitInput('ram', this.value)">
+              <div class="flex justify-between text-xs text-muted mt-1">
+                <span>128 MB</span>
+                <span>512 MB</span>
+                <span>1024 MB (1 GB)</span>
+                <span>2048 MB (2 GB)</span>
+                <span>4096 MB (4 GB)</span>
+                <span>8192 MB (8 GB)</span>
+              </div>
+            </div>
+
+            <!-- RAM Max Hard Limit -->
+            <div class="form-group">
+              <div class="flex justify-between items-center mb-2">
+                <label class="form-label" style="font-weight:600;margin:0;">
+                  RAM Hard Limit (MemoryMax — Isolated OOM Ceiling)
+                </label>
+                <div class="flex items-center gap-2">
+                  <input type="number" id="limit-input-rammax" class="input" style="width:100px;text-align:right;" min="256" max="32768" step="64" value="768" oninput="syncLimitSlider('rammax', this.value)">
+                  <span class="text-mono font-bold text-sm">MB</span>
+                </div>
+              </div>
+              <input type="range" id="limit-slider-rammax" min="256" max="16384" step="64" value="768" style="width:100%;accent-color:var(--warning);cursor:pointer;" oninput="syncLimitInput('rammax', this.value)">
+              <span class="form-hint" style="font-size:11px;color:var(--text-tertiary);margin-top:4px;display:block;">
+                Hard memory threshold where kernel will terminate leaky user processes without taking down the server.
+              </span>
+            </div>
+
+            <!-- Disk Quota & TasksMax Row -->
+            <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+              <div class="form-group">
+                <label class="form-label" style="font-weight:600;font-size:0.85rem;color:var(--text-secondary);margin-bottom:6px;display:block;">
+                  Disk Space Quota (MB)
+                </label>
+                <div class="flex items-center gap-2">
+                  <input type="number" id="limit-input-disk" class="input" min="256" max="1000000" step="256" value="5000" style="width:100%;" oninput="updateDiskGbLabel()">
+                  <span class="text-mono text-xs text-muted" id="limit-disk-gb-label" style="white-space:nowrap;">~4.88 GB</span>
+                </div>
+                <span class="form-hint" style="font-size:11px;color:var(--text-tertiary);margin-top:4px;display:block;">
+                  Debian ext4 quota (90% soft alert, 100% hard write block).
+                </span>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label" style="font-weight:600;font-size:0.85rem;color:var(--text-secondary);margin-bottom:6px;display:block;">
+                  Max Tasks / Processes (TasksMax)
+                </label>
+                <input type="number" id="limit-input-tasks" class="input" min="20" max="1000" step="10" value="150" style="width:100%;">
+                <span class="form-hint" style="font-size:11px;color:var(--text-tertiary);margin-top:4px;display:block;">
+                  Anti-fork bomb limit per user process tree.
+                </span>
+              </div>
+            </div>
+
+            <!-- Action buttons -->
+            <div class="flex justify-between items-center pt-3" style="border-top:1px solid var(--border-primary);">
+              <button class="btn btn-secondary btn-sm" onclick="repairPerms('${escapeHTML(domain)}')">
+                🛡️ Repair POSIX Security (750 / ${escapeHTML(siteUser)}:www-data)
+              </button>
+              <button class="btn btn-primary" id="btn-save-limits" onclick="saveSiteLimits('${escapeHTML(domain)}')">
+                💾 Save & Apply Limits Instantly
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Multi-Tenant Architecture Overview Card -->
+        <div class="site-manage-card">
+          <div class="site-manage-card-header">
+            <h3 class="site-manage-card-title">Isolation Architecture Details</h3>
+          </div>
+          <div class="table-wrap">
+            <table class="table">
+              <tbody>
+                <tr>
+                  <td class="text-muted" style="width:220px;">Dedicated System User</td>
+                  <td class="text-mono font-bold" style="color:var(--accent-primary);">${escapeHTML(siteUser)}</td>
+                </tr>
+                <tr>
+                  <td class="text-muted">Systemd Resource Slice</td>
+                  <td class="text-mono text-xs">/etc/systemd/system/deols-user-${escapeHTML(siteUser)}.slice</td>
+                </tr>
+                <tr>
+                  <td class="text-muted">cgroups v2 Controller</td>
+                  <td class="text-mono text-xs">/sys/fs/cgroup/deols-user-${escapeHTML(siteUser)}.slice</td>
+                </tr>
+                <tr>
+                  <td class="text-muted">OpenLiteSpeed FastCGI / LSPHP</td>
+                  <td class="text-mono text-xs">uds://tmp/lsphp_${escapeHTML(siteUser)}.sock (extUser: ${escapeHTML(siteUser)}, extGroup: www-data)</td>
+                </tr>
+                <tr>
+                  <td class="text-muted">Directory Permissions</td>
+                  <td class="text-mono text-xs">chmod 750 /var/www/${escapeHTML(domain)} (chown -R ${escapeHTML(siteUser)}:www-data)</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
@@ -1497,10 +1717,131 @@ async function renderSiteManage(container, domain) {
       const pane = container.querySelector(`#pane-${tabName}`);
       if (pane) pane.classList.add('active');
 
+      if (tabName === 'limits') loadSiteLimits(domain);
       if (tabName === 'vhost') loadVhostConf(domain);
       if (tabName === 'logs') loadSiteLogs(domain, currentSiteLogType);
     });
   });
+}
+
+function syncLimitSlider(type, val) {
+  const num = parseInt(val, 10);
+  if (isNaN(num)) return;
+  const slider = document.getElementById(`limit-slider-${type}`);
+  if (slider) slider.value = num;
+  if (type === 'cpu') {
+    const label = document.getElementById('limit-cpu-cores-text');
+    if (label) label.textContent = `${(num / 100).toFixed(1)} Core${num >= 200 ? 's' : ''}`;
+  }
+}
+
+function syncLimitInput(type, val) {
+  const num = parseInt(val, 10);
+  if (isNaN(num)) return;
+  const input = document.getElementById(`limit-input-${type}`);
+  if (input) input.value = num;
+  if (type === 'cpu') {
+    const label = document.getElementById('limit-cpu-cores-text');
+    if (label) label.textContent = `${(num / 100).toFixed(1)} Core${num >= 200 ? 's' : ''}`;
+  }
+}
+
+function updateDiskGbLabel() {
+  const diskMb = parseInt(document.getElementById('limit-input-disk')?.value || '5000', 10);
+  const gbLabel = document.getElementById('limit-disk-gb-label');
+  if (gbLabel) {
+    gbLabel.textContent = `~${(diskMb / 1024).toFixed(2)} GB`;
+  }
+}
+
+async function loadSiteLimits(domain) {
+  const res = await api(`/sites/${encodeURIComponent(domain)}/limits`);
+  if (!res || !res.success) return;
+
+  const { limits = {}, metrics = {} } = res;
+
+  // 1. Update sliders & inputs
+  const cpuPercent = limits.cpuPercent || 100;
+  const ramMb = limits.ramMb || 512;
+  const ramMaxMb = limits.ramMaxMb || 768;
+  const diskMb = limits.diskMb || 5000;
+  const tasksMax = limits.tasksMax || 150;
+
+  syncLimitInput('cpu', cpuPercent);
+  syncLimitSlider('cpu', cpuPercent);
+  syncLimitInput('ram', ramMb);
+  syncLimitSlider('ram', ramMb);
+  syncLimitInput('rammax', ramMaxMb);
+  syncLimitSlider('rammax', ramMaxMb);
+
+  const diskInput = document.getElementById('limit-input-disk');
+  if (diskInput) diskInput.value = diskMb;
+  updateDiskGbLabel();
+
+  const tasksInput = document.getElementById('limit-input-tasks');
+  if (tasksInput) tasksInput.value = tasksMax;
+
+  // 2. Update Gauges
+  const activeCpu = metrics.cpuPercent || 0;
+  const cpuText = document.getElementById('metric-cpu-text');
+  const cpuBar = document.getElementById('metric-cpu-bar');
+  const cpuCoreLabel = document.getElementById('metric-cpu-limit-label');
+  if (cpuText) cpuText.textContent = `${activeCpu.toFixed(1)}% / ${cpuPercent}%`;
+  if (cpuBar) cpuBar.style.width = `${Math.min(100, Math.round((activeCpu / cpuPercent) * 100))}%`;
+  if (cpuCoreLabel) cpuCoreLabel.textContent = `${(cpuPercent / 100).toFixed(1)} Core${cpuPercent >= 200 ? 's' : ''}`;
+
+  const activeRam = metrics.ramMb || 0;
+  const ramText = document.getElementById('metric-ram-text');
+  const ramBar = document.getElementById('metric-ram-bar');
+  const ramMaxLabel = document.getElementById('metric-ram-max-label');
+  if (ramText) ramText.textContent = `${activeRam} MB / ${ramMb} MB`;
+  if (ramBar) ramBar.style.width = `${Math.min(100, Math.round((activeRam / ramMb) * 100))}%`;
+  if (ramMaxLabel) ramMaxLabel.textContent = `${ramMaxMb} MB`;
+
+  const activeDisk = metrics.diskMb || 0;
+  const diskText = document.getElementById('metric-disk-text');
+  const diskBar = document.getElementById('metric-disk-bar');
+  if (diskText) diskText.textContent = `${activeDisk} MB / ${diskMb} MB`;
+  if (diskBar) diskBar.style.width = `${Math.min(100, Math.round((activeDisk / diskMb) * 100))}%`;
+
+  const activeTasks = metrics.activeTasks || 0;
+  const tasksText = document.getElementById('metric-tasks-text');
+  const tasksBar = document.getElementById('metric-tasks-bar');
+  if (tasksText) tasksText.textContent = `${activeTasks} / ${tasksMax}`;
+  if (tasksBar) tasksBar.style.width = `${Math.min(100, Math.round((activeTasks / tasksMax) * 100))}%`;
+}
+
+async function saveSiteLimits(domain) {
+  const btn = document.getElementById('btn-save-limits');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loading-spinner"></span> Applying…';
+  }
+
+  const cpuPercent = parseInt(document.getElementById('limit-input-cpu')?.value || '100', 10);
+  const ramMb = parseInt(document.getElementById('limit-input-ram')?.value || '512', 10);
+  const ramMaxMb = parseInt(document.getElementById('limit-input-rammax')?.value || '768', 10);
+  const diskMb = parseInt(document.getElementById('limit-input-disk')?.value || '5000', 10);
+  const tasksMax = parseInt(document.getElementById('limit-input-tasks')?.value || '150', 10);
+
+  toast('Updating cgroups v2 slice and filesystem quotas…', 'info');
+
+  const res = await api(`/sites/${encodeURIComponent(domain)}/limits`, {
+    method: 'POST',
+    body: { cpuPercent, ramMb, ramMaxMb, diskMb, tasksMax },
+  });
+
+  if (btn) {
+    btn.disabled = false;
+    btn.innerHTML = '💾 Save & Apply Limits Instantly';
+  }
+
+  if (res?.success) {
+    toast(res.message || 'Resource limits updated successfully!', 'success');
+    await loadSiteLimits(domain);
+  } else {
+    toast(res?.message || res?.error || 'Failed to update resource limits', 'error');
+  }
 }
 
 async function saveDomainSettings(domain) {

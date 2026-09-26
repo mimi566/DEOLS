@@ -361,6 +361,20 @@ export default async function systemRoutes(app) {
     };
   });
 
+  // ─── Quota Status & Enable ────────────────────────────
+  app.get('/quotas/status', async () => {
+    const { getSystemQuotaStatus } = await import('../services/isolation.js');
+    return getSystemQuotaStatus();
+  });
+
+  app.post('/quotas/enable', async (request, reply) => {
+    if (request.user?.role !== 'admin') {
+      return reply.code(403).send({ error: 'Administrator privileges required' });
+    }
+    const { enableSystemQuotas } = await import('../services/isolation.js');
+    return enableSystemQuotas();
+  });
+
   // ─── Reload Server / Panel Daemon ─────────────────────
   const handleSystemReload = async (request, reply) => {
     setTimeout(async () => {
