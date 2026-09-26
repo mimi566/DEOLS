@@ -9,7 +9,7 @@ import { join, dirname } from 'path';
 import os from 'os';
 import { config } from '../config.js';
 import { shell, run } from '../utils/shell.js';
-import { ensureOlsListeners } from '../utils/ols-config.js';
+import { ensureOlsListeners, testOlsSyntax } from '../utils/ols-config.js';
 
 const BACKUP_DIR = config.backupDir || '/var/backups/deols';
 const PRE_LEAN_ARCHIVE = join(BACKUP_DIR, 'pre_lean_engine_backup.tar.gz');
@@ -467,22 +467,17 @@ export default async function leanEngineRoutes(app) {
         ensureOlsListeners(olsConfPath);
 
         // Validate OpenLiteSpeed syntax
-        if (process.platform === 'linux' && existsSync(join(config.olsRoot, 'bin', 'lswsctrl'))) {
-          const testRes = await shell(`"${join(config.olsRoot, 'bin', 'lswsctrl')}" test`);
-          const testOutput = ((testRes.stdout || '') + ' ' + (testRes.stderr || '')).trim();
-          const isOk = testRes.code === 0 || testOutput.includes('[OK]') || testOutput.includes('syntax is ok') || testOutput.includes('is valid');
-
-          if (!isOk) {
-            console.error('[Lean Engine] OLS Syntax test failed:', testOutput);
-            // Revert immediately from safety backup
-            if (existsSync(PRE_LEAN_ARCHIVE)) {
-              await shell(`tar -xzf "${PRE_LEAN_ARCHIVE}" -C / -P`);
-            }
-            return reply.code(500).send({
-              error: 'OpenLiteSpeed syntax test failed. Automatically reverted to safe configuration.',
-              details: testOutput,
-            });
+        const testRes = await testOlsSyntax();
+        if (!testRes.ok) {
+          console.error('[Lean Engine] OLS Syntax test failed:', testRes.output);
+          // Revert immediately from safety backup
+          if (existsSync(PRE_LEAN_ARCHIVE)) {
+            await shell(`tar -xzf "${PRE_LEAN_ARCHIVE}" -C / -P`);
           }
+          return reply.code(500).send({
+            error: 'OpenLiteSpeed syntax test failed. Automatically reverted to safe configuration.',
+            details: testRes.output,
+          });
         }
       } catch (olsErr) {
         return reply.code(500).send({ error: `Failed to update OpenLiteSpeed configuration: ${olsErr.message}` });
@@ -654,8 +649,8 @@ innodb_file_per_table          = 1
     // 4. Validate & Restart Services
     if (process.platform === 'linux') {
       try {
+        await testOlsSyntax();
         if (existsSync(join(config.olsRoot, 'bin', 'lswsctrl'))) {
-          await shell(`"${join(config.olsRoot, 'bin', 'lswsctrl')}" test`);
           await shell(`"${join(config.olsRoot, 'bin', 'lswsctrl')}" restart`);
         }
         await shell('systemctl restart mariadb 2>/dev/null || true');

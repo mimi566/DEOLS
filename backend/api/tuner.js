@@ -8,7 +8,7 @@ import { join } from 'path';
 import os from 'os';
 import { config } from '../config.js';
 import { shell, run } from '../utils/shell.js';
-import { ensureOlsListeners } from '../utils/ols-config.js';
+import { ensureOlsListeners, testOlsSyntax } from '../utils/ols-config.js';
 
 const BACKUP_DIR = config.backupDir || '/var/backups/deols';
 const SYSTEM_DEFAULTS_ARCHIVE = join(BACKUP_DIR, 'system_defaults.tar.gz');
@@ -388,22 +388,17 @@ export default async function tunerRoutes(app) {
         ensureOlsListeners(olsConfPath);
 
         // Validate OLS configuration syntax
-        if (process.platform === 'linux' && existsSync(join(config.olsRoot, 'bin', 'lswsctrl'))) {
-          const testRes = await shell(`"${join(config.olsRoot, 'bin', 'lswsctrl')}" test`);
-          const testOutput = ((testRes.stdout || '') + ' ' + (testRes.stderr || '')).trim();
-          const isOk = testRes.code === 0 || testOutput.includes('[OK]') || testOutput.includes('syntax is ok') || testOutput.includes('is valid');
-          
-          if (!isOk) {
-            console.error('[Auto-Tuner] OLS Syntax test failed:', testOutput);
-            // Revert immediately from pre-tuning backup
-            if (existsSync(PRE_TUNING_ARCHIVE)) {
-              await shell(`tar -xzf "${PRE_TUNING_ARCHIVE}" -C / -P`);
-            }
-            return reply.code(500).send({
-              error: 'OpenLiteSpeed syntax test failed. Automatically reverted to safe configuration.',
-              details: testOutput,
-            });
+        const testRes = await testOlsSyntax();
+        if (!testRes.ok) {
+          console.error('[Auto-Tuner] OLS Syntax test failed:', testRes.output);
+          // Revert immediately from pre-tuning backup
+          if (existsSync(PRE_TUNING_ARCHIVE)) {
+            await shell(`tar -xzf "${PRE_TUNING_ARCHIVE}" -C / -P`);
           }
+          return reply.code(500).send({
+            error: 'OpenLiteSpeed syntax test failed. Automatically reverted to safe configuration.',
+            details: testRes.output,
+          });
         }
       } catch (olsErr) {
         return reply.code(500).send({ error: `Failed to update OpenLiteSpeed configuration: ${olsErr.message}` });
@@ -530,9 +525,7 @@ max_connections                = ${Math.min(250, Math.max(50, allocations.phpWor
         }
 
         // 4. Test OpenLiteSpeed syntax
-        if (existsSync(join(config.olsRoot, 'bin', 'lswsctrl'))) {
-          await shell(`"${join(config.olsRoot, 'bin', 'lswsctrl')}" test`);
-        }
+        await testOlsSyntax();
 
         // 5. Restart services
         await shell('systemctl start mariadb 2>/dev/null || true');

@@ -7,6 +7,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'f
 import { join } from 'path';
 import { execSync } from 'child_process';
 import { config } from '../config.js';
+import { shell } from './shell.js';
 
 /**
  * Ensure Default (Port 80) and DefaultHTTPS / HTTPS (Port 443) listeners exist in httpd_config.conf
@@ -591,5 +592,38 @@ export function syncAllVirtualHosts() {
   }
 
   return { success: true, syncedCount: synced.length, sites: synced };
+}
+
+/**
+ * Test OpenLiteSpeed configuration syntax safely across all OLS versions.
+ * In OpenLiteSpeed, syntax testing is performed directly via `/usr/local/lsws/bin/openlitespeed -t`
+ * or `/usr/local/lsws/bin/lshttpd -t` (lswsctrl only accepts service control commands).
+ */
+export async function testOlsSyntax() {
+  if (process.platform !== 'linux') {
+    return { ok: true, output: 'Syntax test passed (non-linux dev platform)' };
+  }
+
+  const olsBin = join(config.olsRoot || '/usr/local/lsws', 'bin');
+  const openlitespeed = join(olsBin, 'openlitespeed');
+  const lshttpd = join(olsBin, 'lshttpd');
+
+  // 1. Direct binary test: openlitespeed -t
+  if (existsSync(openlitespeed)) {
+    const res = await shell(`"${openlitespeed}" -t 2>&1`);
+    const out = ((res.stdout || '') + ' ' + (res.stderr || '')).trim();
+    const isOk = res.code === 0 || out.includes('[OK]') || out.includes('syntax is ok') || out.includes('is valid') || out.includes('Configuration file is valid');
+    return { ok: isOk, output: out, code: res.code };
+  }
+
+  // 2. Direct binary test: lshttpd -t
+  if (existsSync(lshttpd)) {
+    const res = await shell(`"${lshttpd}" -t 2>&1`);
+    const out = ((res.stdout || '') + ' ' + (res.stderr || '')).trim();
+    const isOk = res.code === 0 || out.includes('[OK]') || out.includes('syntax is ok') || out.includes('is valid') || out.includes('Configuration file is valid');
+    return { ok: isOk, output: out, code: res.code };
+  }
+
+  return { ok: true, output: 'OpenLiteSpeed syntax validator not found on standard path' };
 }
 
