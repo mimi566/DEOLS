@@ -8,7 +8,7 @@ import { join } from 'path';
 import { config } from '../config.js';
 
 /**
- * Ensure Default (Port 80) and DefaultHTTPS (Port 443) listeners exist in httpd_config.conf
+ * Ensure Default (Port 80) and DefaultHTTPS / HTTPS (Port 443) listeners exist in httpd_config.conf
  * Exactly like CyberPanel's dual-listener SNI architecture.
  */
 export function ensureOlsListeners(httpdConfPath = null) {
@@ -26,6 +26,11 @@ export function ensureOlsListeners(httpdConfPath = null) {
       content = content.replace(/(listener\s+Default\s*\{[^}]*binding\s+)[*0-9.:]*:8088/is, '$1*:80');
       modified = true;
     }
+    // If listener Default has no map entries, add fallback Example * if Example vhost exists
+    if (!/listener\s+Default\s*\{[^}]*map\s+/is.test(content) && /virtualhost\s+Example\b/i.test(content)) {
+      content = content.replace(/(listener\s+Default\s*\{)/i, '$1\n  map                     Example *');
+      modified = true;
+    }
   } else {
     // If no Default listener exists, check if any listener on port 80 exists
     const hasAnyPort80 = /listener\s+[^\r\n]+\s*\{[^}]*address\s+[*0-9.:]*:80\b/s.test(content);
@@ -35,6 +40,7 @@ listener Default {
   address                 *:80
   binding                 *:80
   secure                  0
+  map                     Example *
 }
 `;
       content += defaultPort80Block;
@@ -42,7 +48,7 @@ listener Default {
     }
   }
 
-  // 2. Clean up conflicting or empty DefaultHTTPS listener if HTTPS listener already exists
+  // 2. Clean up conflicting or legacy DefaultHTTPS listener name
   if (/listener\s+DefaultHTTPS\s*\{/i.test(content)) {
     if (/listener\s+HTTPS\s*\{/i.test(content)) {
       content = content.replace(/\n?listener\s+DefaultHTTPS\s*\{[^}]*\}/s, '');
@@ -53,27 +59,65 @@ listener Default {
     }
   }
 
-  // 3. Ensure canonical listener HTTPS (Port 443) exists
-  const hasPort443Listener = /listener\s+HTTPS\s*\{/i.test(content) || /listener\s+[^\r\n]+\s*\{[^}]*address\s+[*0-9.:]*:443\b/s.test(content);
-  if (!hasPort443Listener) {
-    const certPath = join(config.olsRoot, 'admin', 'conf', 'webadmin.crt');
-    const keyPath = join(config.olsRoot, 'admin', 'conf', 'webadmin.key');
+  // Determine SSL cert and key paths
+  let certPath = join(config.olsRoot, 'admin', 'conf', 'webadmin.crt');
+  let keyPath = join(config.olsRoot, 'admin', 'conf', 'webadmin.key');
 
+  if (!existsSync(certPath) || !existsSync(keyPath)) {
+    const exCert = join(config.olsRoot, 'conf', 'example.crt');
+    const exKey = join(config.olsRoot, 'conf', 'example.key');
+    if (existsSync(exCert) && existsSync(exKey)) {
+      certPath = exCert;
+      keyPath = exKey;
+    }
+  }
+
+  // 3. Ensure canonical listener HTTPS (Port 443) exists with SSL certificates and mappings
+  if (!/listener\s+HTTPS\s*\{/i.test(content) && !/listener\s+[^\r\n]+\s*\{[^}]*address\s+[*0-9.:]*:443\b/s.test(content)) {
     const defaultPort443Block = `
 listener HTTPS {
   address                 *:443
   binding                 *:443
   secure                  1
-  keyFile                 ${existsSync(keyPath) ? keyPath : '/usr/local/lsws/admin/conf/webadmin.key'}
-  certFile                ${existsSync(certPath) ? certPath : '/usr/local/lsws/admin/conf/webadmin.crt'}
+  keyFile                 ${keyPath}
+  certFile                ${certPath}
+  sslProtocol             30
+  map                     Example *
 }
 `;
     content += defaultPort443Block;
     modified = true;
+  } else if (/listener\s+HTTPS\s*\{/i.test(content)) {
+    // If listener HTTPS already exists, ensure it has secure 1, keyFile, certFile, and sslProtocol
+    content = content.replace(/listener\s+HTTPS\s*\{([^}]*)\}/i, (block, body) => {
+      let updatedBody = body;
+      if (!/secure\s+1/i.test(updatedBody)) {
+        updatedBody = updatedBody.replace(/secure\s+\d+/i, 'secure                  1');
+        if (!/secure\s+1/i.test(updatedBody)) updatedBody += '\n  secure                  1';
+        modified = true;
+      }
+      if (!/keyFile\s+/i.test(updatedBody)) {
+        updatedBody += `\n  keyFile                 ${keyPath}`;
+        modified = true;
+      }
+      if (!/certFile\s+/i.test(updatedBody)) {
+        updatedBody += `\n  certFile                ${certPath}`;
+        modified = true;
+      }
+      if (!/sslProtocol\s+/i.test(updatedBody)) {
+        updatedBody += '\n  sslProtocol             30';
+        modified = true;
+      }
+      if (!/map\s+/i.test(updatedBody) && /virtualhost\s+Example\b/i.test(content)) {
+        updatedBody += '\n  map                     Example *';
+        modified = true;
+      }
+      return `listener HTTPS {${updatedBody}\n}`;
+    });
   }
 
   if (modified) {
-    writeFileSync(confPath, content);
+    writeFileSync(confPath, content, 'utf-8');
   }
 }
 

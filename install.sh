@@ -220,7 +220,12 @@ node "$DEOLS_DIR/bin/deols-cli.js" admin setpass "$ADMIN_PASS" >/dev/null 2>&1 |
 OLS_PASS=$(node -e "const b=crypto.randomBytes(9).toString('base64').replace(/[^a-zA-Z0-9]/g,'X').slice(0,12)+'!9';console.log(b)")
 node "$DEOLS_DIR/bin/deols-cli.js" ols password "$OLS_PASS" >/dev/null 2>&1 || true
 
+# Initialize OpenLiteSpeed Dual Listeners (Port 80 & Port 443) and Virtual Hosts
+echo -e "${CYAN}Configuring OpenLiteSpeed Dual Listeners (Port 80 & 443)…${NC}"
+node "$DEOLS_DIR/bin/deols-cli.js" ols sync >/dev/null 2>&1 || true
+
 echo -e "${GREEN}✓ Firewall and services configured${NC}"
+echo -e "${GREEN}✓ OpenLiteSpeed HTTP (80) & HTTPS (443) Listeners initialized${NC}"
 echo -e "${GREEN}✓ CLI command 'deols' installed to /usr/local/bin/deols${NC}"
 
 # ─── Summary ────────────────────────────────────────────
