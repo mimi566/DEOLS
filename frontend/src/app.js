@@ -2388,13 +2388,15 @@ async function openPhpMyAdmin(dbName = '', domain = '') {
     return;
   }
 
-  const query = [];
-  if (dbName) query.push(`dbName=${encodeURIComponent(dbName)}`);
-  if (domain) query.push(`domain=${encodeURIComponent(domain)}`);
-  const qStr = query.length ? `?${query.join('&')}` : '';
+  // Always use the Server IP (or current admin panel host IP)
+  const serverHost = window.location.hostname && window.location.hostname !== 'localhost'
+    ? window.location.hostname
+    : (status.serverIp && status.serverIp !== '127.0.0.1' ? status.serverIp : '127.0.0.1');
 
-  const launch = await api(`/databases/pma/url${qStr}`);
-  const targetUrl = launch?.url || status.url || `http://${window.location.hostname}/phpmyadmin/`;
+  let targetUrl = `http://${serverHost}/phpmyadmin/`;
+  if (dbName) {
+    targetUrl += `index.php?route=/database/structure&db=${encodeURIComponent(dbName)}`;
+  }
 
   window.open(targetUrl, '_blank');
 }

@@ -129,50 +129,69 @@ $cfg['ServerDefault'] = 1;
 }
 
 /**
- * Ensure OpenLiteSpeed global context for /phpmyadmin exists
+ * Ensure OpenLiteSpeed global context and symlinks for /phpmyadmin exist
  */
 export async function ensureOlsPmaContext(pmaPath) {
+  const pmaDir = pmaPath || getPmaPath();
+
+  if (process.platform === 'linux') {
+    try {
+      // 1. Ensure permissions are nobody:nogroup and 755
+      await shell(`chown -R nobody:nogroup "${pmaDir}" 2>/dev/null || chown -R nobody:www-data "${pmaDir}" 2>/dev/null || true`);
+      await shell(`find "${pmaDir}" -type d -exec chmod 755 {} \\; 2>/dev/null || true`);
+      await shell(`find "${pmaDir}" -type f -exec chmod 644 {} \\; 2>/dev/null || true`);
+
+      // 2. Symlink to Example vhost html directory (serves Server IP default traffic on port 80/443)
+      if (existsSync('/usr/local/lsws/Example/html')) {
+        await shell(`ln -sfn "${pmaDir}" /usr/local/lsws/Example/html/phpmyadmin 2>/dev/null || true`);
+        await shell('chown -h nobody:nogroup /usr/local/lsws/Example/html/phpmyadmin 2>/dev/null || true');
+      }
+
+      // 3. Symlink to /var/www/html
+      mkdirSync('/var/www/html', { recursive: true });
+      await shell(`ln -sfn "${pmaDir}" /var/www/html/phpmyadmin 2>/dev/null || true`);
+      await shell('chown -h nobody:nogroup /var/www/html/phpmyadmin 2>/dev/null || true');
+    } catch {}
+  }
+
+  // 4. Also register context in httpd_config.conf
   const httpdConf = join(config.olsRoot, 'conf', 'httpd_config.conf');
-  if (!existsSync(httpdConf)) return;
-
-  try {
-    let content = readFileSync(httpdConf, 'utf-8');
-    const pmaDir = pmaPath || getPmaPath();
-
-    // Check if context /phpmyadmin already exists in httpd_config.conf
-    if (!/context\s+\/phpmyadmin/i.test(content)) {
-      const pmaContext = `
+  if (existsSync(httpdConf)) {
+    try {
+      let content = readFileSync(httpdConf, 'utf-8');
+      if (!/context\s+\/phpmyadmin/i.test(content)) {
+        const pmaContext = `
 context /phpmyadmin/ {
   location                ${pmaDir}/
   allowBrowse             1
   addDefaultCharset       off
 }
 `;
-      // Append to httpd_config.conf
-      content += pmaContext;
-      writeFileSync(httpdConf, content, 'utf-8');
-      await shell('systemctl reload lsws 2>/dev/null || /usr/local/lsws/bin/lswsctrl reload 2>/dev/null || true');
-    }
-  } catch {}
+        content += pmaContext;
+        writeFileSync(httpdConf, content, 'utf-8');
+        if (process.platform === 'linux') {
+          await shell('systemctl reload lsws 2>/dev/null || /usr/local/lsws/bin/lswsctrl reload 2>/dev/null || true');
+        }
+      }
+    } catch {}
+  }
 }
 
 /**
- * Generate direct URL to phpMyAdmin for a specific database/domain
+ * Generate direct URL to phpMyAdmin using Server IP
  */
 export async function getPmaLaunchUrl(dbName = null, domain = null) {
-  let host = domain;
   let serverIp = '127.0.0.1';
 
   if (process.platform === 'linux') {
     try {
-      const res = await shell("hostname -I 2>/dev/null | awk '{print $1}'");
+      const res = await shell("curl -s -m 2 https://api.ipify.org 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}'");
       serverIp = res.stdout.trim() || '127.0.0.1';
     } catch {}
   }
 
-  if (!host) {
-    host = serverIp;
-  }
+  // Always use serverIp for phpMyAdmin URL
+  const host = serverIp !== '127.0.0.1' ? serverIp : (domain || '127.0.0.1');
 
   let baseUrl = `http://${host}/phpmyadmin/`;
   if (dbName) {
@@ -182,7 +201,7 @@ export async function getPmaLaunchUrl(dbName = null, domain = null) {
   return {
     url: baseUrl,
     dbName,
-    domain,
     serverIp,
+    host,
   };
 }
