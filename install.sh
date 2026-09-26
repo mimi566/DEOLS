@@ -147,20 +147,25 @@ if [[ ! -f /opt/deols/phpmyadmin/index.php && ! -f /usr/share/phpmyadmin/index.p
 fi
 
 if [[ -d /opt/deols/phpmyadmin && -f /opt/deols/phpmyadmin/index.php ]]; then
+  mkdir -p /opt/deols/config 2>/dev/null || true
   PMA_SECRET=$(openssl rand -hex 16 2>/dev/null || echo "deols_pma_secret_blowfish_32chars")
+  echo -n "${PMA_SECRET}" > /opt/deols/config/sso_secret.key 2>/dev/null || true
+  chmod 644 /opt/deols/config/sso_secret.key 2>/dev/null || true
+
   cat > /opt/deols/phpmyadmin/config.inc.php <<EOF
 <?php
 declare(strict_types=1);
 \$cfg['blowfish_secret'] = '${PMA_SECRET}';
 \$i = 1;
 \$cfg['Servers'][\$i]['auth_type'] = 'signon';
-\$cfg['Servers'][\$i]['SignonSession'] = 'DEOLS_PMA_SSO';
+\$cfg['Servers'][\$i]['SignonSession'] = 'DEOLSSession';
 \$cfg['Servers'][\$i]['SignonURL'] = 'autologin.php';
-\$cfg['Servers'][\$i]['SignonCookieParams'] = ['path' => '/'];
-\$cfg['Servers'][\$i]['host'] = 'localhost';
-\$cfg['Servers'][\$i]['connect_type'] = 'socket';
+\$cfg['Servers'][\$i]['LogoutURL'] = '/';
+\$cfg['Servers'][\$i]['host'] = '127.0.0.1';
+\$cfg['Servers'][\$i]['port'] = '3306';
+\$cfg['Servers'][\$i]['connect_type'] = 'tcp';
 \$cfg['Servers'][\$i]['compress'] = false;
-\$cfg['Servers'][\$i]['AllowNoPassword'] = true;
+\$cfg['Servers'][\$i]['AllowNoPassword'] = false;
 \$cfg['Servers'][\$i]['extension'] = 'mysqli';
 \$cfg['UploadDir'] = '';
 \$cfg['SaveDir'] = '';
@@ -174,55 +179,97 @@ EOF
   cat > /opt/deols/phpmyadmin/autologin.php <<'EOF'
 <?php
 declare(strict_types=1);
-if (session_status() === PHP_SESSION_NONE) {
-    ini_set('session.use_cookies', '1');
-    ini_set('session.use_only_cookies', '1');
-    ini_set('session.cookie_httponly', '1');
-    ini_set('session.cookie_path', '/');
-    session_name('DEOLS_PMA_SSO');
-    @session_start();
+error_reporting(E_ALL);
+ini_set('display_errors', '0');
+session_name('DEOLSSession');
+@session_start();
+
+$ssoToken = $_GET['sso'] ?? ($_POST['sso'] ?? null);
+if (!$ssoToken) {
+    http_response_code(403);
+    die('Access Denied: Missing SSO Token.');
 }
-$token = $_GET['token'] ?? ($_POST['token'] ?? '');
-$tokenFile = '/tmp/deols_pma_tokens.json';
-if (!empty($token) && file_exists($tokenFile)) {
-    $content = @file_get_contents($tokenFile);
-    $tokens = $content ? json_decode($content, true) : [];
-    if (is_array($tokens) && isset($tokens[$token])) {
-        $data = $tokens[$token];
-        if (isset($data['time']) && (time() - (int)$data['time']) < 180) {
-            unset($tokens[$token]);
-            @file_put_contents($tokenFile, json_encode($tokens));
-            @chmod($tokenFile, 0666);
-            $_SESSION['PMA_single_signon_user'] = $data['user'];
-            $_SESSION['PMA_single_signon_password'] = $data['pass'];
-            $_SESSION['PMA_single_signon_host'] = 'localhost';
-            $_SESSION['PMA_single_signon_port'] = '';
-            $_SESSION['PMA_single_signon_controluser'] = '';
-            $_SESSION['PMA_single_signon_controlpass'] = '';
-            session_write_close();
-            $targetDb = !empty($data['db']) ? urlencode($data['db']) : '';
-            $dest = 'index.php' . ($targetDb ? '?route=/database/structure&db=' . $targetDb : '');
-            header('Location: ' . $dest);
-            exit;
+
+try {
+    $keyFile = '/opt/deols/config/sso_secret.key';
+    if (!file_exists($keyFile)) {
+        $keyFile = __DIR__ . '/sso_secret.key';
+    }
+    $secretKey = file_exists($keyFile) ? trim((string)@file_get_contents($keyFile)) : '';
+    if (empty($secretKey)) {
+        $cfgPath = __DIR__ . '/config.inc.php';
+        if (file_exists($cfgPath)) {
+            $cfgText = (string)@file_get_contents($cfgPath);
+            if (preg_match("/\\\$cfg\\['blowfish_secret'\\]\\s*=\\s*['\"]([^'\"]+)['\"];/", $cfgText, $m)) {
+                $secretKey = $m[1];
+            }
         }
     }
-}
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['pma_username'])) {
-    $_SESSION['PMA_single_signon_user'] = $_POST['pma_username'];
-    $_SESSION['PMA_single_signon_password'] = $_POST['pma_password'] ?? '';
-    $_SESSION['PMA_single_signon_host'] = 'localhost';
-    $_SESSION['PMA_single_signon_port'] = '';
+    if (empty($secretKey)) {
+        throw new Exception("SSO Secret Key File Missing");
+    }
+
+    $decodedData = null;
+    $rawToken = strtr($ssoToken, '-_', '+/');
+    $decodedRaw = base64_decode($rawToken);
+
+    if ($decodedRaw) {
+        if (strpos($decodedRaw, ':') !== false) {
+            [$ivBase64, $encBase64] = explode(':', $decodedRaw, 2);
+            $iv = base64_decode($ivBase64);
+            $key = hash('sha256', $secretKey, true);
+            $decrypted = openssl_decrypt(base64_decode($encBase64), 'AES-256-CBC', $key, OPENSSL_RAW_DATA, $iv);
+            if ($decrypted) {
+                $decodedData = json_decode($decrypted, true);
+            }
+        }
+        if (!$decodedData) {
+            $json = json_decode($decodedRaw, true);
+            if ($json && isset($json['data'], $json['sig'])) {
+                $expectedSig = hash_hmac('sha256', (string)$json['data'], $secretKey);
+                if (hash_equals($expectedSig, (string)$json['sig'])) {
+                    $decodedData = json_decode((string)$json['data'], true);
+                }
+            } elseif ($json && (isset($json['db_user']) || isset($json['user']))) {
+                $decodedData = $json;
+            }
+        }
+    }
+
+    if (!$decodedData || !is_array($decodedData)) {
+        throw new Exception("Invalid SSO Token Structure");
+    }
+
+    $dbUser = $decodedData['db_user'] ?? ($decodedData['user'] ?? '');
+    $dbPass = $decodedData['db_pass'] ?? ($decodedData['pass'] ?? '');
+    $dbName = $decodedData['db_name'] ?? ($decodedData['db'] ?? '');
+    $expires = $decodedData['expires'] ?? ($decodedData['time'] ? ($decodedData['time'] + 300) : 0);
+
+    if (empty($dbUser)) {
+        throw new Exception("Database user missing from token");
+    }
+    if ($expires > 0 && time() > (int)$expires) {
+        throw new Exception("SSO Token Expired");
+    }
+
+    $_SESSION['PMA_single_signon_user'] = $dbUser;
+    $_SESSION['PMA_single_signon_password'] = $dbPass;
+    $_SESSION['PMA_single_signon_host'] = '127.0.0.1';
+    $_SESSION['PMA_single_signon_port'] = 3306;
+
     session_write_close();
-    header('Location: index.php');
+
+    $targetDb = !empty($dbName) ? urlencode($dbName) : '';
+    $dest = 'index.php' . ($targetDb ? '?route=/database/structure&db=' . $targetDb : '');
+    header('Location: ' . $dest);
+    exit;
+
+} catch (Exception $e) {
+    error_log("[DEOLS phpMyAdmin SSO Error] " . $e->getMessage());
+    http_response_code(400);
+    echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>phpMyAdmin Auto-Login</title><style>body{background:#0f172a;color:#f8fafc;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.c{background:#1e293b;padding:32px;border-radius:12px;border:1px solid #ef4444;max-width:400px;text-align:center;}h3{color:#ef4444;margin-top:0;}p{color:#94a3b8;line-height:1.5;}</style></head><body><div class="c"><h3>phpMyAdmin Auto-Login Failed</h3><p>' . htmlspecialchars($e->getMessage()) . '</p></div></body></html>';
     exit;
 }
-if (!empty($_SESSION['PMA_single_signon_user'])) {
-    header('Location: index.php');
-    exit;
-}
-?>
-<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>phpMyAdmin - Login</title><meta name="viewport" content="width=device-width, initial-scale=1.0"><style>body{font-family:system-ui;background:#0f172a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.c{background:#1e293b;padding:32px;border-radius:12px;width:320px;}input{width:100%;box-sizing:border-box;padding:10px;margin-bottom:12px;border:1px solid #475569;border-radius:6px;background:#0f172a;color:#fff;}button{width:100%;padding:10px;border:none;border-radius:6px;background:#0284c7;color:#fff;font-weight:600;cursor:pointer;}</style></head><body><div class="c"><h2 style="text-align:center;color:#38bdf8;">🗄️ Database Login</h2><form method="POST" action="autologin.php"><input type="text" name="pma_username" placeholder="User" required><input type="password" name="pma_password" placeholder="Password"><button type="submit">Log In</button></form></div></body></html>
 EOF
 
   chown -R nobody:nogroup /opt/deols/phpmyadmin 2>/dev/null || true
