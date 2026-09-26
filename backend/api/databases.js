@@ -1,6 +1,6 @@
 import { config } from '../config.js';
 import { shell, run, execSql, generatePassword } from '../utils/shell.js';
-import { getPmaStatus, installPhpMyAdmin, getPmaLaunchUrl } from '../services/pma.js';
+import { getPmaStatus, installPhpMyAdmin, getPmaLaunchUrl, generatePmaSsoSession } from '../services/pma.js';
 
 export default async function databaseRoutes(app) {
   app.addHook('preHandler', app.authenticate);
@@ -17,6 +17,13 @@ export default async function databaseRoutes(app) {
       return reply.code(500).send(res);
     }
     return res;
+  });
+
+  // ─── Generate 1-Click SSO Token for Instant Auto-Login ──
+  app.post('/pma/sso-token', async (request) => {
+    const { dbName, domain } = request.body || {};
+    const reqHost = request.headers['host'] ? request.headers['host'].split(':')[0] : null;
+    return await generatePmaSsoSession(dbName, domain, reqHost);
   });
 
   // ─── Get phpMyAdmin Direct Launch URL ───────────────────

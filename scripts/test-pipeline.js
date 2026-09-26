@@ -314,6 +314,8 @@ WantedBy=multi-user.target
     getPmaStatus,
     getPmaLaunchUrl,
     installPhpMyAdmin,
+    generatePmaSsoSession,
+    getSiteDatabaseCredentials,
   } = await import('../backend/services/pma.js');
 
   const pmaInstallRes = await installPhpMyAdmin();
@@ -327,6 +329,11 @@ WantedBy=multi-user.target
   const pmaLaunch = await getPmaLaunchUrl(testDbName, cleanDomain);
   assert(pmaLaunch.url.includes(cleanDomain) || pmaLaunch.url.includes('127.0.0.1'), `phpMyAdmin host resolved: ${pmaLaunch.url}`);
   assert(pmaLaunch.url.includes(`db=${testDbName}`), `phpMyAdmin direct database route encoded: ${pmaLaunch.url}`);
+
+  const ssoRes = await generatePmaSsoSession(testDbName, cleanDomain, '127.0.0.1');
+  assert(ssoRes.success === true, 'phpMyAdmin SSO session generated successfully');
+  assert(typeof ssoRes.token === 'string' && ssoRes.token.length >= 24, `SSO token created with sufficient entropy (${ssoRes.token.substring(0, 8)}…)`);
+  assert(ssoRes.ssoUrl.includes('/phpmyadmin/autologin.php?token='), `SSO launch URL properly routed to autologin bridge: ${ssoRes.ssoUrl}`);
 
   // Cleanup sandbox
   try {

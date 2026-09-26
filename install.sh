@@ -144,29 +144,100 @@ chmod 1777 /tmp/lshttpd 2>/dev/null || true
 if [[ ! -f /opt/deols/phpmyadmin/index.php && ! -f /usr/share/phpmyadmin/index.php ]]; then
   echo -e "${CYAN}Setting up phpMyAdmin Database Manager…${NC}"
   curl -fsSL https://files.phpmyadmin.net/phpMyAdmin/5.2.1/phpMyAdmin-5.2.1-all-languages.tar.gz | tar -xz --strip-components=1 -C /opt/deols/phpmyadmin 2>/dev/null || true
-  if [[ -f /opt/deols/phpmyadmin/index.php ]]; then
-    PMA_SECRET=$(openssl rand -hex 16 2>/dev/null || echo "deols_pma_secret_blowfish_32chars")
-    cat > /opt/deols/phpmyadmin/config.inc.php <<EOF
+fi
+
+if [[ -d /opt/deols/phpmyadmin && -f /opt/deols/phpmyadmin/index.php ]]; then
+  PMA_SECRET=$(openssl rand -hex 16 2>/dev/null || echo "deols_pma_secret_blowfish_32chars")
+  cat > /opt/deols/phpmyadmin/config.inc.php <<EOF
 <?php
 declare(strict_types=1);
 \$cfg['blowfish_secret'] = '${PMA_SECRET}';
 \$i = 1;
-\$cfg['Servers'][\$i]['auth_type'] = 'cookie';
-\$cfg['Servers'][\$i]['host'] = '127.0.0.1';
-\$cfg['Servers'][\$i]['port'] = '3306';
-\$cfg['Servers'][\$i]['connect_type'] = 'tcp';
+\$cfg['Servers'][\$i]['auth_type'] = 'signon';
+\$cfg['Servers'][\$i]['SignonSession'] = 'DEOLS_PMA_SSO';
+\$cfg['Servers'][\$i]['SignonURL'] = 'autologin.php';
+\$cfg['Servers'][\$i]['SignonCookieParams'] = ['path' => '/'];
+\$cfg['Servers'][\$i]['host'] = 'localhost';
+\$cfg['Servers'][\$i]['connect_type'] = 'socket';
 \$cfg['Servers'][\$i]['compress'] = false;
-\$cfg['Servers'][\$i]['AllowNoPassword'] = false;
+\$cfg['Servers'][\$i]['AllowNoPassword'] = true;
 \$cfg['Servers'][\$i]['extension'] = 'mysqli';
 \$cfg['UploadDir'] = '';
 \$cfg['SaveDir'] = '';
 \$cfg['TempDir'] = '/tmp';
+\$cfg['SendErrorReports'] = 'never';
+\$cfg['MaxRows'] = 50;
+\$cfg['DefaultLang'] = 'en';
+\$cfg['ServerDefault'] = 1;
 EOF
-    chown -R nobody:nogroup /opt/deols/phpmyadmin 2>/dev/null || true
-    chmod -R 755 /opt/deols/phpmyadmin 2>/dev/null || true
+
+  cat > /opt/deols/phpmyadmin/autologin.php <<'EOF'
+<?php
+declare(strict_types=1);
+if (session_status() === PHP_SESSION_NONE) {
+    ini_set('session.use_cookies', '1');
+    ini_set('session.use_only_cookies', '1');
+    ini_set('session.cookie_httponly', '1');
+    ini_set('session.cookie_path', '/');
+    session_name('DEOLS_PMA_SSO');
+    @session_start();
+}
+$token = $_GET['token'] ?? ($_POST['token'] ?? '');
+$tokenFile = '/tmp/deols_pma_tokens.json';
+if (!empty($token) && file_exists($tokenFile)) {
+    $content = @file_get_contents($tokenFile);
+    $tokens = $content ? json_decode($content, true) : [];
+    if (is_array($tokens) && isset($tokens[$token])) {
+        $data = $tokens[$token];
+        if (isset($data['time']) && (time() - (int)$data['time']) < 180) {
+            unset($tokens[$token]);
+            @file_put_contents($tokenFile, json_encode($tokens));
+            @chmod($tokenFile, 0666);
+            $_SESSION['PMA_single_signon_user'] = $data['user'];
+            $_SESSION['PMA_single_signon_password'] = $data['pass'];
+            $_SESSION['PMA_single_signon_host'] = 'localhost';
+            $_SESSION['PMA_single_signon_port'] = '';
+            $_SESSION['PMA_single_signon_controluser'] = '';
+            $_SESSION['PMA_single_signon_controlpass'] = '';
+            session_write_close();
+            $targetDb = !empty($data['db']) ? urlencode($data['db']) : '';
+            $dest = 'index.php' . ($targetDb ? '?route=/database/structure&db=' . $targetDb : '');
+            header('Location: ' . $dest);
+            exit;
+        }
+    }
+}
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['pma_username'])) {
+    $_SESSION['PMA_single_signon_user'] = $_POST['pma_username'];
+    $_SESSION['PMA_single_signon_password'] = $_POST['pma_password'] ?? '';
+    $_SESSION['PMA_single_signon_host'] = 'localhost';
+    $_SESSION['PMA_single_signon_port'] = '';
+    session_write_close();
+    header('Location: index.php');
+    exit;
+}
+if (!empty($_SESSION['PMA_single_signon_user'])) {
+    header('Location: index.php');
+    exit;
+}
+?>
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>phpMyAdmin - Login</title><meta name="viewport" content="width=device-width, initial-scale=1.0"><style>body{font-family:system-ui;background:#0f172a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.c{background:#1e293b;padding:32px;border-radius:12px;width:320px;}input{width:100%;box-sizing:border-box;padding:10px;margin-bottom:12px;border:1px solid #475569;border-radius:6px;background:#0f172a;color:#fff;}button{width:100%;padding:10px;border:none;border-radius:6px;background:#0284c7;color:#fff;font-weight:600;cursor:pointer;}</style></head><body><div class="c"><h2 style="text-align:center;color:#38bdf8;">🗄️ Database Login</h2><form method="POST" action="autologin.php"><input type="text" name="pma_username" placeholder="User" required><input type="password" name="pma_password" placeholder="Password"><button type="submit">Log In</button></form></div></body></html>
+EOF
+
+  chown -R nobody:nogroup /opt/deols/phpmyadmin 2>/dev/null || true
+  chmod -R 755 /opt/deols/phpmyadmin 2>/dev/null || true
+  chmod 644 /opt/deols/phpmyadmin/config.inc.php /opt/deols/phpmyadmin/autologin.php 2>/dev/null || true
+
+  # Symlink to Example vhost html directory (Server IP port 80/443 default)
+  if [[ -d /usr/local/lsws/Example/html ]]; then
+    ln -sfn /opt/deols/phpmyadmin /usr/local/lsws/Example/html/phpmyadmin 2>/dev/null || true
+    chown -h nobody:nogroup /usr/local/lsws/Example/html/phpmyadmin 2>/dev/null || true
   fi
+  mkdir -p /var/www/html 2>/dev/null || true
+  ln -sfn /opt/deols/phpmyadmin /var/www/html/phpmyadmin 2>/dev/null || true
 fi
-echo -e "${GREEN}✓ phpMyAdmin Database Manager ready${NC}"
+echo -e "${GREEN}✓ phpMyAdmin Database Manager ready (1-Click SSO enabled)${NC}"
 
 # ─── Install DEOLS Panel ────────────────────────────────
 

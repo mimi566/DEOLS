@@ -2364,41 +2364,67 @@ async function dropDbUser(user, host) {
 // ─── phpMyAdmin Integration ─────────────────────────────────
 
 async function openPhpMyAdmin(dbName = '', domain = '') {
-  toast('Connecting to phpMyAdmin…', 'info', 2000);
-  const status = await api('/databases/pma/status');
+  toast('Launching phpMyAdmin with 1-Click Auto-Login…', 'info', 2500);
 
-  if (!status || !status.installed) {
-    showModal('Install phpMyAdmin', `
-      <div class="flex flex-col gap-4">
-        <div style="text-align:center;padding:12px 0;">
-          <div style="font-size:3.5rem;margin-bottom:12px;">🗄️</div>
-          <h3 style="font-size:1.2rem;font-weight:700;margin-bottom:8px;">phpMyAdmin Database Manager</h3>
-          <p class="text-muted" style="font-size:0.9rem;line-height:1.5;">
-            phpMyAdmin is not installed on this server yet. DEOLS can automatically download, secure with blowfish encryption, and configure phpMyAdmin for OpenLiteSpeed in one click.
-          </p>
-        </div>
-        <div class="flex justify-end gap-3 pt-3" style="border-top:1px solid var(--border-primary);">
-          <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-          <button class="btn btn-primary" id="btn-install-pma" onclick="installPhpMyAdminNow('${escapeHTML(dbName)}', '${escapeHTML(domain)}')">
-            ⚡ Install & Launch phpMyAdmin
-          </button>
-        </div>
-      </div>
-    `);
-    return;
+  // Pre-open tab to prevent popup blocker from blocking async redirection
+  const win = window.open('', '_blank');
+  if (win) {
+    try {
+      win.document.write(`<!DOCTYPE html><html><head><title>Opening phpMyAdmin…</title><style>body{background:#0f172a;color:#f8fafc;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}div{text-align:center;}</style></head><body><div><div style="font-size:3rem;margin-bottom:12px;">🗄️</div><h2 style="font-size:1.2rem;margin-bottom:8px;">Connecting to phpMyAdmin…</h2><p style="color:#94a3b8;font-size:0.9rem;">Authenticating single sign-on session…</p></div></body></html>`);
+    } catch {}
   }
 
-  // Always use the Server IP (or current admin panel host IP)
-  const serverHost = window.location.hostname && window.location.hostname !== 'localhost'
-    ? window.location.hostname
-    : (status.serverIp && status.serverIp !== '127.0.0.1' ? status.serverIp : '127.0.0.1');
+  try {
+    const status = await api('/databases/pma/status');
 
-  let targetUrl = `http://${serverHost}/phpmyadmin/`;
-  if (dbName) {
-    targetUrl += `index.php?route=/database/structure&db=${encodeURIComponent(dbName)}`;
+    if (!status || !status.installed) {
+      if (win) win.close();
+      showModal('Install phpMyAdmin', `
+        <div class="flex flex-col gap-4">
+          <div style="text-align:center;padding:12px 0;">
+            <div style="font-size:3.5rem;margin-bottom:12px;">🗄️</div>
+            <h3 style="font-size:1.2rem;font-weight:700;margin-bottom:8px;">phpMyAdmin Database Manager</h3>
+            <p class="text-muted" style="font-size:0.9rem;line-height:1.5;">
+              phpMyAdmin is not installed on this server yet. DEOLS can automatically download, secure with blowfish encryption, and configure 1-Click Single Sign-On for OpenLiteSpeed.
+            </p>
+          </div>
+          <div class="flex justify-end gap-3 pt-3" style="border-top:1px solid var(--border-primary);">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="btn-install-pma" onclick="installPhpMyAdminNow('${escapeHTML(dbName)}', '${escapeHTML(domain)}')">
+              ⚡ Install & Launch phpMyAdmin
+            </button>
+          </div>
+        </div>
+      `);
+      return;
+    }
+
+    // Request 1-Click SSO token for instant auto-login
+    const ssoRes = await api('/databases/pma/sso-token', {
+      method: 'POST',
+      body: { dbName, domain },
+    });
+
+    if (ssoRes?.ssoUrl) {
+      if (win) win.location.href = ssoRes.ssoUrl;
+      else window.open(ssoRes.ssoUrl, '_blank');
+    } else {
+      // Fallback to server IP direct URL
+      const serverHost = window.location.hostname && window.location.hostname !== 'localhost'
+        ? window.location.hostname
+        : (status.serverIp && status.serverIp !== '127.0.0.1' ? status.serverIp : '127.0.0.1');
+
+      let targetUrl = `http://${serverHost}/phpmyadmin/`;
+      if (dbName) {
+        targetUrl += `index.php?route=/database/structure&db=${encodeURIComponent(dbName)}`;
+      }
+      if (win) win.location.href = targetUrl;
+      else window.open(targetUrl, '_blank');
+    }
+  } catch (err) {
+    if (win) win.close();
+    toast('Failed to launch phpMyAdmin: ' + (err.message || 'Error'), 'error');
   }
-
-  window.open(targetUrl, '_blank');
 }
 
 async function installPhpMyAdminNow(dbName = '', domain = '') {
