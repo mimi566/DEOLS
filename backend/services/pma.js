@@ -88,19 +88,148 @@ export function createSsoToken(payload, secret) {
 }
 
 /**
- * Ensure config.inc.php is configured for Single Sign-On (SSO) mode
+ * Write the robust, error-handled autologin.php bridge script into target directory
  */
-export function ensurePmaConfiguration(pmaPath) {
-  const cfgFile = join(pmaPath, 'config.inc.php');
-  const blowfishSecret = getSsoSecret();
+export async function writeAutologinBridge(pmaPath) {
+  const bridgeContent = `<?php
+/**
+ * DEOLS phpMyAdmin 1-Click Single Sign-On (SSO) Auto-Login Bridge
+ */
+declare(strict_types=1);
+error_reporting(0);
+ini_set('display_errors', '0');
 
+// Ensure writable session path
+if (!is_writable((string)session_save_path())) {
+    @session_save_path('/tmp');
+}
+
+ini_set('session.use_cookies', '1');
+ini_set('session.cookie_httponly', '1');
+ini_set('session.cookie_path', '/');
+session_name('DEOLSSession');
+@session_start();
+
+$ssoToken = $_GET['sso'] ?? ($_POST['sso'] ?? '');
+
+if (empty($ssoToken)) {
+    if (empty($_SESSION['PMA_single_signon_user'])) {
+        http_response_code(403);
+        die('Access Denied: Missing SSO Token.');
+    }
+    header('Location: index.php');
+    exit;
+}
+
+// Find secret key
+$secretKey = '';
+$keyFiles = [
+    '/opt/deols/config/sso_secret.key',
+    __DIR__ . '/sso_secret.key',
+    '/etc/phpmyadmin/sso_secret.key',
+    '/opt/deols/data/config/sso_secret.key'
+];
+foreach ($keyFiles as $kf) {
+    if (file_exists($kf)) {
+        $secretKey = trim((string)@file_get_contents($kf));
+        if (!empty($secretKey)) break;
+    }
+}
+if (empty($secretKey) && file_exists(__DIR__ . '/config.inc.php')) {
+    $c = (string)@file_get_contents(__DIR__ . '/config.inc.php');
+    if (preg_match("/\\\$cfg\\['blowfish_secret'\\]\\s*=\\s*['\"]([^'\"]+)['\"];/", $c, $m)) {
+        $secretKey = $m[1];
+    }
+}
+if (empty($secretKey)) $secretKey = 'deols_pma_secret_blowfish_32chars';
+
+$decodedData = null;
+
+// URL-Safe HMAC Token verification (data.sig)
+if (strpos($ssoToken, '.') !== false) {
+    [$dataB64, $sig] = explode('.', $ssoToken, 2);
+    $expectedSig = rtrim(strtr(base64_encode(hash_hmac('sha256', $dataB64, $secretKey, true)), '+/', '-_'), '=');
+    if (hash_equals($expectedSig, rtrim($sig, '='))) {
+        $decodedData = json_decode(base64_decode(strtr($dataB64, '-_', '+/')), true);
+    }
+}
+
+// Fallback base64 / json
+if (!$decodedData) {
+    $clean = str_replace(' ', '+', $ssoToken);
+    $raw = base64_decode(strtr($clean, '-_', '+/'));
+    if ($raw && strpos($raw, ':') !== false) {
+        [$ivB64, $encB64] = explode(':', $raw, 2);
+        $k = hash('sha256', $secretKey, true);
+        $dec = openssl_decrypt(base64_decode($encB64), 'AES-256-CBC', $k, OPENSSL_RAW_DATA, base64_decode($ivB64));
+        if ($dec) $decodedData = json_decode($dec, true);
+    } elseif ($raw) {
+        $decodedData = json_decode($raw, true);
+    }
+}
+
+if (!$decodedData || empty($decodedData['db_user'] ?? $decodedData['user'])) {
+    http_response_code(400);
+    die('Invalid or Corrupted SSO Token.');
+}
+
+$dbUser = $decodedData['db_user'] ?? $decodedData['user'];
+$dbPass = $decodedData['db_pass'] ?? ($decodedData['pass'] ?? '');
+$dbName = $decodedData['db_name'] ?? ($decodedData['db'] ?? '');
+$expires = $decodedData['expires'] ?? ($decodedData['time'] ? ($decodedData['time'] + 300) : 0);
+
+if ($expires > 0 && time() > (int)$expires) {
+    http_response_code(400);
+    die('SSO Token Expired.');
+}
+
+// 1. Populate phpMyAdmin Single Sign-On Session
+$_SESSION['PMA_single_signon_user'] = $dbUser;
+$_SESSION['PMA_single_signon_password'] = $dbPass;
+$_SESSION['PMA_single_signon_host'] = '127.0.0.1';
+$_SESSION['PMA_single_signon_port'] = 3306;
+$_SESSION['PMA_single_signon_cfgupdate'] = [
+    'host' => '127.0.0.1',
+    'port' => 3306,
+];
+
+session_write_close();
+
+setcookie('DEOLSSession', session_id(), [
+    'expires' => 0,
+    'path' => '/',
+    'domain' => '',
+    'secure' => false,
+    'httponly' => true,
+    'samesite' => 'Lax'
+]);
+
+$dest = 'index.php' . (!empty($dbName) ? '?route=/database/structure&db=' . urlencode($dbName) : '');
+header('Location: ' . $dest);
+exit;
+`;
+
+  try {
+    writeFileSync(join(pmaPath, 'autologin.php'), bridgeContent, 'utf-8');
+    if (process.platform === 'linux') {
+      await shell(`chmod 644 "${join(pmaPath, 'autologin.php')}" 2>/dev/null || true`);
+      await shell(`chown nobody:nogroup "${join(pmaPath, 'autologin.php')}" 2>/dev/null || true`);
+    }
+  } catch {}
+}
+
+/**
+ * Synchronize all system phpMyAdmin configuration and autologin files
+ */
+export async function syncAllPmaConfigs() {
+  const secret = getSsoSecret();
   const configContent = `<?php
 /**
  * phpMyAdmin SSO Configuration for DEOLS
  */
 declare(strict_types=1);
 
-$cfg['blowfish_secret'] = '${blowfishSecret}';
+$cfg['blowfish_secret'] = '${secret}';
 
 $i = 0;
 $i++;
@@ -124,156 +253,39 @@ $cfg['DefaultLang'] = 'en';
 $cfg['ServerDefault'] = 1;
 `;
 
-  try {
-    writeFileSync(cfgFile, configContent, 'utf-8');
-    if (process.platform === 'linux') {
-      shell(`chmod 644 "${cfgFile}" 2>/dev/null || true`);
-      shell(`chown nobody:nogroup "${cfgFile}" 2>/dev/null || true`);
+  const targetDirs = [
+    '/opt/deols/phpmyadmin',
+    '/usr/share/phpmyadmin',
+    '/var/www/phpmyadmin',
+    '/var/www/html/phpmyadmin',
+    '/usr/local/lsws/Example/html/phpmyadmin',
+    '/etc/phpmyadmin',
+    '/var/lib/phpmyadmin',
+    join(config.dataDir, 'phpmyadmin'),
+  ];
+
+  for (const dir of targetDirs) {
+    if (existsSync(dir)) {
+      try {
+        writeFileSync(join(dir, 'config.inc.php'), configContent, 'utf-8');
+        await writeAutologinBridge(dir);
+        if (process.platform === 'linux') {
+          await shell(`chown -R nobody:nogroup "${dir}" 2>/dev/null || true`);
+          await shell(`chmod 644 "${join(dir, 'config.inc.php')}" "${join(dir, 'autologin.php')}" 2>/dev/null || true`);
+        }
+      } catch {}
     }
-  } catch {}
-}
+  }
 
-/**
- * Write the robust, error-handled autologin.php bridge script into phpMyAdmin directory
- */
-export async function writeAutologinBridge(pmaPath) {
-  const bridgeContent = `<?php
-/**
- * DEOLS phpMyAdmin 1-Click Single Sign-On (SSO) Auto-Login Bridge
- */
-declare(strict_types=1);
-error_reporting(E_ALL);
-ini_set('display_errors', '1');
-
-// Ensure session directory is writable
-$sessPath = session_save_path();
-if (empty($sessPath) || !is_writable($sessPath)) {
-    if (is_dir('/tmp') && is_writable('/tmp')) {
-        session_save_path('/tmp');
-    }
-}
-
-// Session configuration matching phpMyAdmin
-ini_set('session.use_cookies', '1');
-ini_set('session.cookie_httponly', '1');
-ini_set('session.cookie_path', '/');
-session_name('DEOLSSession');
-@session_start();
-
-$ssoToken = $_GET['sso'] ?? ($_POST['sso'] ?? '');
-
-if (empty($ssoToken)) {
-    echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>phpMyAdmin SSO</title><style>body{background:#0f172a;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.c{background:#1e293b;padding:24px;border-radius:12px;text-align:center;max-width:360px;}h3{color:#38bdf8;}</style></head><body><div class="c"><h3>🗄️ DEOLS phpMyAdmin</h3><p style="color:#94a3b8;">Please launch phpMyAdmin from your DEOLS control panel database section.</p></div></body></html>';
-    exit;
-}
-
-// Read secret key
-$secretKey = '';
-$keyFiles = [
-    '/opt/deols/config/sso_secret.key',
-    __DIR__ . '/sso_secret.key',
-    '/opt/deols/data/config/sso_secret.key'
-];
-foreach ($keyFiles as $kf) {
-    if (file_exists($kf) && is_readable($kf)) {
-        $secretKey = trim((string)@file_get_contents($kf));
-        if (!empty($secretKey)) break;
-    }
-}
-
-// Fallback to config.inc.php blowfish secret
-if (empty($secretKey) && file_exists(__DIR__ . '/config.inc.php')) {
-    $cfgContent = (string)@file_get_contents(__DIR__ . '/config.inc.php');
-    if (preg_match("/\\\$cfg\\['blowfish_secret'\\]\\s*=\\s*['\"]([^'\"]+)['\"];/", $cfgContent, $m)) {
-        $secretKey = $m[1];
-    }
-}
-
-if (empty($secretKey)) {
-    $secretKey = 'deols_pma_secret_blowfish_32chars';
-}
-
-$decodedData = null;
-
-// Method 1: URL-safe HMAC Token (data.signature)
-if (strpos($ssoToken, '.') !== false) {
-    [$dataB64, $sig] = explode('.', $ssoToken, 2);
-    $expectedSig = rtrim(strtr(base64_encode(hash_hmac('sha256', $dataB64, $secretKey, true)), '+/', '-_'), '=');
-    $cleanSig = rtrim($sig, '=');
-
-    if (hash_equals($expectedSig, $cleanSig)) {
-        $jsonStr = base64_decode(strtr($dataB64, '-_', '+/'));
-        $decodedData = json_decode($jsonStr, true);
-    }
-}
-
-// Method 2: Legacy fallback
-if (!$decodedData) {
-    $cleanToken = str_replace(' ', '+', $ssoToken);
-    $raw = base64_decode(strtr($cleanToken, '-_', '+/'));
-    if ($raw && strpos($raw, ':') !== false) {
-        [$ivB64, $encB64] = explode(':', $raw, 2);
-        $iv = base64_decode($ivB64);
-        $k = hash('sha256', $secretKey, true);
-        $dec = openssl_decrypt(base64_decode($encB64), 'AES-256-CBC', $k, OPENSSL_RAW_DATA, $iv);
-        if ($dec) $decodedData = json_decode($dec, true);
-    } elseif ($raw) {
-        $json = json_decode($raw, true);
-        if ($json) $decodedData = $json;
-    }
-}
-
-if (!$decodedData || !is_array($decodedData)) {
-    echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>phpMyAdmin SSO</title><style>body{background:#0f172a;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.c{background:#1e293b;padding:24px;border-radius:12px;text-align:center;border:1px solid #ef4444;max-width:380px;}h3{color:#ef4444;margin-top:0;}p{color:#94a3b8;line-height:1.5;}</style></head><body><div class="c"><h3>Authentication Token Error</h3><p>Unable to verify SSO token signature. Please try launching phpMyAdmin again from DEOLS.</p></div></body></html>';
-    exit;
-}
-
-$dbUser = $decodedData['db_user'] ?? ($decodedData['user'] ?? '');
-$dbPass = $decodedData['db_pass'] ?? ($decodedData['pass'] ?? '');
-$dbName = $decodedData['db_name'] ?? ($decodedData['db'] ?? '');
-$expires = $decodedData['expires'] ?? ($decodedData['time'] ? ($decodedData['time'] + 300) : 0);
-
-if (empty($dbUser)) {
-    echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>phpMyAdmin SSO</title><style>body{background:#0f172a;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.c{background:#1e293b;padding:24px;border-radius:12px;text-align:center;border:1px solid #ef4444;max-width:380px;}h3{color:#ef4444;margin-top:0;}</style></head><body><div class="c"><h3>Missing Database User</h3><p style="color:#94a3b8;">No database user associated with this token.</p></div></body></html>';
-    exit;
-}
-
-if ($expires > 0 && time() > (int)$expires) {
-    echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>phpMyAdmin SSO</title><style>body{background:#0f172a;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.c{background:#1e293b;padding:24px;border-radius:12px;text-align:center;border:1px solid #eab308;max-width:380px;}h3{color:#eab308;margin-top:0;}</style></head><body><div class="c"><h3>SSO Session Expired</h3><p style="color:#94a3b8;">The one-time login link expired. Please click "Open in phpMyAdmin" again.</p></div></body></html>';
-    exit;
-}
-
-// Populate phpMyAdmin Signon Session
-$_SESSION['PMA_single_signon_user'] = $dbUser;
-$_SESSION['PMA_single_signon_password'] = $dbPass;
-$_SESSION['PMA_single_signon_host'] = '127.0.0.1';
-$_SESSION['PMA_single_signon_port'] = 3306;
-
-session_write_close();
-
-// Set cookie for browser
-setcookie('DEOLSSession', session_id(), [
-    'expires' => 0,
-    'path' => '/',
-    'domain' => '',
-    'secure' => false,
-    'httponly' => true,
-    'samesite' => 'Lax'
-]);
-
-$targetDb = !empty($dbName) ? urlencode($dbName) : '';
-$dest = 'index.php' . ($targetDb ? '?route=/database/structure&db=' . $targetDb : '');
-header('Location: ' . $dest);
-exit;
-`;
-
-  try {
-    writeFileSync(join(pmaPath, 'autologin.php'), bridgeContent, 'utf-8');
-    if (process.platform === 'linux') {
-      await shell(`chmod 644 "${join(pmaPath, 'autologin.php')}" 2>/dev/null || true`);
-      await shell(`chown nobody:nogroup "${join(pmaPath, 'autologin.php')}" 2>/dev/null || true`);
-    }
-  } catch {}
+  // Also write conf.d/01-deols.php if /etc/phpmyadmin/conf.d exists
+  if (existsSync('/etc/phpmyadmin/conf.d')) {
+    try {
+      writeFileSync('/etc/phpmyadmin/conf.d/01-deols.php', configContent, 'utf-8');
+      if (process.platform === 'linux') {
+        await shell('chmod 644 /etc/phpmyadmin/conf.d/01-deols.php 2>/dev/null || true');
+      }
+    } catch {}
+  }
 }
 
 /**
@@ -284,8 +296,7 @@ export async function installPhpMyAdmin() {
     // Dev mock
     mkdirSync(PMA_DIR, { recursive: true });
     writeFileSync(join(PMA_DIR, 'index.php'), '<?php echo "phpMyAdmin Mock"; ?>');
-    ensurePmaConfiguration(PMA_DIR);
-    await writeAutologinBridge(PMA_DIR);
+    await syncAllPmaConfigs();
     return { success: true, path: PMA_DIR, simulated: true };
   }
 
@@ -305,17 +316,10 @@ export async function installPhpMyAdmin() {
 
     const activePath = getPmaPath();
 
-    // 2. Configure config.inc.php and autologin.php bridge
-    ensurePmaConfiguration(activePath);
-    await writeAutologinBridge(activePath);
+    // 2. Synchronize configs across all paths
+    await syncAllPmaConfigs();
 
-    // 3. Set proper permissions for OpenLiteSpeed (nobody:nogroup)
-    await shell(`chown -R nobody:nogroup "${activePath}" 2>/dev/null || chown -R nobody:www-data "${activePath}" 2>/dev/null || true`);
-    await shell(`find "${activePath}" -type d -exec chmod 755 {} \\; 2>/dev/null || true`);
-    await shell(`find "${activePath}" -type f -exec chmod 644 {} \\; 2>/dev/null || true`);
-    await shell(`chmod 644 "${join(activePath, 'config.inc.php')}" "${join(activePath, 'autologin.php')}" 2>/dev/null || true`);
-
-    // 4. Ensure OpenLiteSpeed has /phpmyadmin context in httpd_config.conf and symlinks
+    // 3. Ensure OpenLiteSpeed has /phpmyadmin context in httpd_config.conf and symlinks
     await ensureOlsPmaContext(activePath);
 
     return {
@@ -338,18 +342,8 @@ export async function installPhpMyAdmin() {
 export async function ensureOlsPmaContext(pmaPath) {
   const pmaDir = pmaPath || getPmaPath();
 
-  // Ensure key file exists and has proper permissions
-  getSsoSecret();
-
-  // Ensure bridge script and configuration exist in active PMA path
-  ensurePmaConfiguration(pmaDir);
-  await writeAutologinBridge(pmaDir);
-
-  // If /usr/share/phpmyadmin exists, also ensure configuration there
-  if (pmaDir !== SYSTEM_PMA_DIR && existsSync(join(SYSTEM_PMA_DIR, 'index.php'))) {
-    ensurePmaConfiguration(SYSTEM_PMA_DIR);
-    await writeAutologinBridge(SYSTEM_PMA_DIR);
-  }
+  // Synchronize all phpMyAdmin configs and bridges across system
+  await syncAllPmaConfigs();
 
   if (process.platform === 'linux') {
     try {
@@ -515,19 +509,22 @@ export async function generatePmaSsoSession(dbName = null, domain = null, reqHos
   const expires = now + 180; // 3 minutes TTL
   const secretKey = getSsoSecret();
 
-  // If on Linux, ensure user is permitted from 127.0.0.1 and localhost
+  // If on Linux, ensure user is permitted from %, 127.0.0.1, and localhost
   if (process.platform === 'linux' && user && user !== 'root') {
     try {
       const safeDb = db ? db.replace(/[^a-zA-Z0-9_]/g, '') : '';
       const safeUser = user.replace(/[^a-zA-Z0-9_]/g, '');
       const safePass = pass.replace(/['"\\]/g, '');
 
-      let grantSql = `CREATE USER IF NOT EXISTS '${safeUser}'@'127.0.0.1' IDENTIFIED BY '${safePass}'; ` +
+      let grantSql = `CREATE USER IF NOT EXISTS '${safeUser}'@'%' IDENTIFIED BY '${safePass}'; ` +
+        `ALTER USER '${safeUser}'@'%' IDENTIFIED BY '${safePass}'; ` +
+        `CREATE USER IF NOT EXISTS '${safeUser}'@'127.0.0.1' IDENTIFIED BY '${safePass}'; ` +
         `ALTER USER '${safeUser}'@'127.0.0.1' IDENTIFIED BY '${safePass}'; ` +
         `CREATE USER IF NOT EXISTS '${safeUser}'@'localhost' IDENTIFIED BY '${safePass}'; ` +
         `ALTER USER '${safeUser}'@'localhost' IDENTIFIED BY '${safePass}'; `;
       if (safeDb) {
-        grantSql += `GRANT ALL PRIVILEGES ON \\\`${safeDb}\\\`.* TO '${safeUser}'@'127.0.0.1'; ` +
+        grantSql += `GRANT ALL PRIVILEGES ON \\\`${safeDb}\\\`.* TO '${safeUser}'@'%'; ` +
+          `GRANT ALL PRIVILEGES ON \\\`${safeDb}\\\`.* TO '${safeUser}'@'127.0.0.1'; ` +
           `GRANT ALL PRIVILEGES ON \\\`${safeDb}\\\`.* TO '${safeUser}'@'localhost'; `;
       }
       grantSql += 'FLUSH PRIVILEGES;';
