@@ -5,7 +5,6 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
 import { join } from 'path';
-import crypto from 'crypto';
 import { config } from '../config.js';
 import { shell, generatePassword } from '../utils/shell.js';
 
@@ -79,16 +78,7 @@ export function getSsoSecret() {
 }
 
 /**
- * Create URL-safe HMAC-SHA256 signed SSO Token (No special chars or URL mutations)
- */
-export function createSsoToken(payload, secret) {
-  const dataB64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
-  const sig = crypto.createHmac('sha256', secret).update(dataB64).digest('base64url');
-  return `${dataB64}.${sig}`;
-}
-
-/**
- * Write the robust, error-handled autologin.php bridge script into target directory
+ * Write the crash-proof autologin.php bridge script into target directory
  */
 export async function writeAutologinBridge(pmaPath) {
   const bridgeContent = `<?php
@@ -96,117 +86,137 @@ export async function writeAutologinBridge(pmaPath) {
  * DEOLS phpMyAdmin 1-Click Single Sign-On (SSO) Auto-Login Bridge
  */
 declare(strict_types=1);
-error_reporting(0);
-ini_set('display_errors', '0');
 
-// Ensure writable session path
+// Enable strict error logging to file while suppressing fatal 500 output to browser
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
+error_reporting(E_ALL);
+
+// Ensure session directory is writable
 if (!is_writable((string)session_save_path())) {
     @session_save_path('/tmp');
 }
 
+// Ensure session starts under phpMyAdmin namespace
 ini_set('session.use_cookies', '1');
 ini_set('session.cookie_httponly', '1');
 ini_set('session.cookie_path', '/');
 session_name('DEOLSSession');
-@session_start();
+if (session_status() === PHP_SESSION_NONE) {
+    @session_start();
+}
 
-$ssoToken = $_GET['sso'] ?? ($_POST['sso'] ?? '');
+$ssoToken = $_GET['sso'] ?? ($_POST['sso'] ?? null);
 
-if (empty($ssoToken)) {
-    if (empty($_SESSION['PMA_single_signon_user'])) {
-        http_response_code(403);
-        die('Access Denied: Missing SSO Token.');
+if (!$ssoToken) {
+    http_response_code(400);
+    die('<div style="font-family:sans-serif;padding:24px;background:#1e293b;color:#f8fafc;border-radius:12px;max-width:400px;margin:60px auto;text-align:center;"><h3>DEOLS SSO</h3><p style="color:#94a3b8;">Missing SSO token payload. Please launch from the DEOLS dashboard.</p></div>');
+}
+
+try {
+    // 1. Read Secret Key used by DEOLS Node.js Backend
+    $keyFile = '/opt/deols/config/sso_secret.key';
+    if (!file_exists($keyFile)) {
+        $keyFile = '/opt/deols/data/config/sso_secret.key';
     }
-    header('Location: index.php');
+    if (!file_exists($keyFile)) {
+        $keyFile = __DIR__ . '/sso_secret.key';
+    }
+
+    $encryptionKey = file_exists($keyFile) ? trim((string)@file_get_contents($keyFile)) : '';
+    if (empty($encryptionKey) && file_exists(__DIR__ . '/config.inc.php')) {
+        $cfg = (string)@file_get_contents(__DIR__ . '/config.inc.php');
+        if (preg_match("/\\\$cfg\\['blowfish_secret'\\]\\s*=\\s*['\"]([^'\"]+)['\"];/", $cfg, $m)) {
+            $encryptionKey = $m[1];
+        }
+    }
+    if (empty($encryptionKey)) {
+        $encryptionKey = 'deols_pma_secret_blowfish_32chars';
+    }
+
+    // 2. Decode Payload (Handling Base64 JSON, HMAC, and OpenSSL AES-256-CBC)
+    $cleanToken = str_replace(' ', '+', (string)$ssoToken);
+    $data = null;
+
+    // A. Direct Base64 / Base64URL JSON decode
+    $rawPayload = base64_decode(strtr($cleanToken, '-_', '+/'));
+    if ($rawPayload) {
+        $parsed = json_decode($rawPayload, true);
+        if ($parsed && (isset($parsed['user']) || isset($parsed['db_user']))) {
+            $data = $parsed;
+        }
+    }
+
+    // B. Dot-separated HMAC Token (data.sig)
+    if (!$data && strpos($cleanToken, '.') !== false) {
+        [$dataB64, $sig] = explode('.', $cleanToken, 2);
+        $expectedSig = rtrim(strtr(base64_encode(hash_hmac('sha256', $dataB64, $encryptionKey, true)), '+/', '-_'), '=');
+        if (hash_equals($expectedSig, rtrim($sig, '='))) {
+            $data = json_decode(base64_decode(strtr($dataB64, '-_', '+/')), true);
+        }
+    }
+
+    // C. AES-256-CBC (IV:Ciphertext)
+    if (!$data && $rawPayload && strpos($rawPayload, ':') !== false) {
+        $parts = explode(':', $rawPayload, 2);
+        if (count($parts) === 2) {
+            $iv = base64_decode($parts[0]);
+            $ciphertext = base64_decode($parts[1]);
+            $k = hash('sha256', $encryptionKey, true);
+            $decrypted = openssl_decrypt($ciphertext, 'aes-256-cbc', $k, OPENSSL_RAW_DATA, $iv);
+            if ($decrypted) {
+                $data = json_decode($decrypted, true);
+            }
+        }
+    }
+
+    if (!$data || (!isset($data['user']) && !isset($data['db_user']))) {
+        throw new Exception("Failed to decode database credentials or invalid token format.");
+    }
+
+    $dbUser = $data['user'] ?? ($data['db_user'] ?? '');
+    $dbPass = $data['pass'] ?? ($data['db_pass'] ?? '');
+    $dbName = $data['db'] ?? ($data['db_name'] ?? '');
+    $expires = $data['exp'] ?? ($data['expires'] ?? 0);
+
+    // 3. Verify Token Expiry (300-second TTL)
+    if ($expires > 0 && time() > (int)$expires) {
+        throw new Exception("SSO session link expired. Please click 'Open in phpMyAdmin' again.");
+    }
+
+    // 4. Set phpMyAdmin Single Sign-On (SSO) Session Keys
+    $_SESSION['PMA_single_signon_user'] = $dbUser;
+    $_SESSION['PMA_single_signon_password'] = $dbPass;
+    $_SESSION['PMA_single_signon_host'] = '127.0.0.1';
+    $_SESSION['PMA_single_signon_port'] = 3306;
+
+    // Commit session changes before redirect
+    session_write_close();
+
+    setcookie('DEOLSSession', session_id(), [
+        'expires' => 0,
+        'path' => '/',
+        'domain' => '',
+        'secure' => false,
+        'httponly' => true,
+        'samesite' => 'Lax'
+    ]);
+
+    // 5. Redirect cleanly into phpMyAdmin
+    $dest = 'index.php' . (!empty($dbName) ? '?route=/database/structure&db=' . urlencode($dbName) : '');
+    header('Location: ' . $dest);
+    exit;
+
+} catch (Exception $e) {
+    error_log("[DEOLS phpMyAdmin SSO Error] " . $e->getMessage());
+    http_response_code(401);
+    echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>phpMyAdmin SSO</title><style>body{background:#0f172a;color:#f8fafc;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.c{background:#1e293b;padding:32px;border-radius:12px;border:1px solid #ef4444;max-width:440px;text-align:center;}h3{color:#ef4444;margin-top:0;}p{color:#94a3b8;line-height:1.5;}</style></head><body><div class="c">';
+    echo '<h3>phpMyAdmin Auto-Login Failed</h3>';
+    echo '<p>' . htmlspecialchars($e->getMessage()) . '</p>';
+    echo '<a href="javascript:window.close()" style="display:inline-block;padding:10px 20px;background:#ef4444;color:#fff;text-decoration:none;border-radius:6px;font-weight:600;margin-top:12px;">Close Window</a>';
+    echo '</div></body></html>';
     exit;
 }
-
-// Find secret key
-$secretKey = '';
-$keyFiles = [
-    '/opt/deols/config/sso_secret.key',
-    __DIR__ . '/sso_secret.key',
-    '/etc/phpmyadmin/sso_secret.key',
-    '/opt/deols/data/config/sso_secret.key'
-];
-foreach ($keyFiles as $kf) {
-    if (file_exists($kf)) {
-        $secretKey = trim((string)@file_get_contents($kf));
-        if (!empty($secretKey)) break;
-    }
-}
-if (empty($secretKey) && file_exists(__DIR__ . '/config.inc.php')) {
-    $c = (string)@file_get_contents(__DIR__ . '/config.inc.php');
-    if (preg_match("/\\\$cfg\\['blowfish_secret'\\]\\s*=\\s*['\"]([^'\"]+)['\"];/", $c, $m)) {
-        $secretKey = $m[1];
-    }
-}
-if (empty($secretKey)) $secretKey = 'deols_pma_secret_blowfish_32chars';
-
-$decodedData = null;
-
-// URL-Safe HMAC Token verification (data.sig)
-if (strpos($ssoToken, '.') !== false) {
-    [$dataB64, $sig] = explode('.', $ssoToken, 2);
-    $expectedSig = rtrim(strtr(base64_encode(hash_hmac('sha256', $dataB64, $secretKey, true)), '+/', '-_'), '=');
-    if (hash_equals($expectedSig, rtrim($sig, '='))) {
-        $decodedData = json_decode(base64_decode(strtr($dataB64, '-_', '+/')), true);
-    }
-}
-
-// Fallback base64 / json
-if (!$decodedData) {
-    $clean = str_replace(' ', '+', $ssoToken);
-    $raw = base64_decode(strtr($clean, '-_', '+/'));
-    if ($raw && strpos($raw, ':') !== false) {
-        [$ivB64, $encB64] = explode(':', $raw, 2);
-        $k = hash('sha256', $secretKey, true);
-        $dec = openssl_decrypt(base64_decode($encB64), 'AES-256-CBC', $k, OPENSSL_RAW_DATA, base64_decode($ivB64));
-        if ($dec) $decodedData = json_decode($dec, true);
-    } elseif ($raw) {
-        $decodedData = json_decode($raw, true);
-    }
-}
-
-if (!$decodedData || empty($decodedData['db_user'] ?? $decodedData['user'])) {
-    http_response_code(400);
-    die('Invalid or Corrupted SSO Token.');
-}
-
-$dbUser = $decodedData['db_user'] ?? $decodedData['user'];
-$dbPass = $decodedData['db_pass'] ?? ($decodedData['pass'] ?? '');
-$dbName = $decodedData['db_name'] ?? ($decodedData['db'] ?? '');
-$expires = $decodedData['expires'] ?? ($decodedData['time'] ? ($decodedData['time'] + 300) : 0);
-
-if ($expires > 0 && time() > (int)$expires) {
-    http_response_code(400);
-    die('SSO Token Expired.');
-}
-
-// 1. Populate phpMyAdmin Single Sign-On Session
-$_SESSION['PMA_single_signon_user'] = $dbUser;
-$_SESSION['PMA_single_signon_password'] = $dbPass;
-$_SESSION['PMA_single_signon_host'] = '127.0.0.1';
-$_SESSION['PMA_single_signon_port'] = 3306;
-$_SESSION['PMA_single_signon_cfgupdate'] = [
-    'host' => '127.0.0.1',
-    'port' => 3306,
-];
-
-session_write_close();
-
-setcookie('DEOLSSession', session_id(), [
-    'expires' => 0,
-    'path' => '/',
-    'domain' => '',
-    'secure' => false,
-    'httponly' => true,
-    'samesite' => 'Lax'
-]);
-
-$dest = 'index.php' . (!empty($dbName) ? '?route=/database/structure&db=' . urlencode($dbName) : '');
-header('Location: ' . $dest);
-exit;
 `;
 
   try {
@@ -506,8 +516,7 @@ export async function generatePmaSsoSession(dbName = null, domain = null, reqHos
   const db = creds?.db || dbName || '';
 
   const now = Math.floor(Date.now() / 1000);
-  const expires = now + 180; // 3 minutes TTL
-  const secretKey = getSsoSecret();
+  const exp = now + 300; // 5 minutes TTL
 
   // If on Linux, ensure user is permitted from %, 127.0.0.1, and localhost
   if (process.platform === 'linux' && user && user !== 'root') {
@@ -533,14 +542,18 @@ export async function generatePmaSsoSession(dbName = null, domain = null, reqHos
     } catch {}
   }
 
-  // Generate URL-safe HMAC-signed token
+  // Generate Base64 Payload
   const payload = {
+    user,
+    pass,
+    db,
     db_user: user,
     db_pass: pass,
     db_name: db,
-    expires,
+    exp,
+    expires: exp,
   };
-  const ssoToken = createSsoToken(payload, secretKey);
+  const ssoToken = Buffer.from(JSON.stringify(payload)).toString('base64url');
 
   // Determine server IP or Host
   let serverIp = '127.0.0.1';
