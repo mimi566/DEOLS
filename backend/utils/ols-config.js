@@ -18,12 +18,17 @@ export function ensureOlsListeners(httpdConfPath = null) {
   let content = readFileSync(confPath, 'utf-8');
   let modified = false;
 
-  // 1. Ensure listener Default (Port 80) is listening on *:80 (convert default 8088 to 80)
+  // 1. Strip any legacy/invalid 'binding' directives from listeners
+  if (/binding\s+[*0-9.:]*/i.test(content)) {
+    content = content.replace(/\n\s*binding\s+[*0-9.:]*/gi, '');
+    modified = true;
+  }
+
+  // 2. Ensure listener Default (Port 80) is listening on *:80
   if (/listener\s+Default\s*\{/i.test(content)) {
     // If listener Default contains 8088, replace with 80
     if (/listener\s+Default\s*\{[^}]*8088/s.test(content)) {
       content = content.replace(/(listener\s+Default\s*\{[^}]*address\s+)[*0-9.:]*:8088/is, '$1*:80');
-      content = content.replace(/(listener\s+Default\s*\{[^}]*binding\s+)[*0-9.:]*:8088/is, '$1*:80');
       modified = true;
     }
     // If listener Default has no map entries, add fallback Example * if Example vhost exists
@@ -38,7 +43,6 @@ export function ensureOlsListeners(httpdConfPath = null) {
       const defaultPort80Block = `
 listener Default {
   address                 *:80
-  binding                 *:80
   secure                  0
   map                     Example *
 }
@@ -48,7 +52,7 @@ listener Default {
     }
   }
 
-  // 2. Clean up conflicting or legacy DefaultHTTPS listener name
+  // 3. Clean up conflicting or legacy DefaultHTTPS listener name
   if (/listener\s+DefaultHTTPS\s*\{/i.test(content)) {
     if (/listener\s+HTTPS\s*\{/i.test(content)) {
       content = content.replace(/\n?listener\s+DefaultHTTPS\s*\{[^}]*\}/s, '');
@@ -72,12 +76,11 @@ listener Default {
     }
   }
 
-  // 3. Ensure canonical listener HTTPS (Port 443) exists with SSL certificates and mappings
+  // 4. Ensure canonical listener HTTPS (Port 443) exists with standard General & SSL directives
   if (!/listener\s+HTTPS\s*\{/i.test(content) && !/listener\s+[^\r\n]+\s*\{[^}]*address\s+[*0-9.:]*:443\b/s.test(content)) {
     const defaultPort443Block = `
 listener HTTPS {
   address                 *:443
-  binding                 *:443
   secure                  1
   keyFile                 ${keyPath}
   certFile                ${certPath}
@@ -88,12 +91,24 @@ listener HTTPS {
     content += defaultPort443Block;
     modified = true;
   } else if (/listener\s+HTTPS\s*\{/i.test(content)) {
-    // If listener HTTPS already exists, ensure it has secure 1, keyFile, certFile, and sslProtocol
     content = content.replace(/listener\s+HTTPS\s*\{([^}]*)\}/i, (block, body) => {
       let updatedBody = body;
+      // Ensure address is *:443
+      if (!/address\s+[*0-9.:]*:443\b/i.test(updatedBody)) {
+        if (/address\s+/i.test(updatedBody)) {
+          updatedBody = updatedBody.replace(/address\s+[^\r\n]+/i, 'address                 *:443');
+        } else {
+          updatedBody = '\n  address                 *:443' + updatedBody;
+        }
+        modified = true;
+      }
+      // Ensure secure 1
       if (!/secure\s+1/i.test(updatedBody)) {
-        updatedBody = updatedBody.replace(/secure\s+\d+/i, 'secure                  1');
-        if (!/secure\s+1/i.test(updatedBody)) updatedBody += '\n  secure                  1';
+        if (/secure\s+\d+/i.test(updatedBody)) {
+          updatedBody = updatedBody.replace(/secure\s+\d+/i, 'secure                  1');
+        } else {
+          updatedBody += '\n  secure                  1';
+        }
         modified = true;
       }
       if (!/keyFile\s+/i.test(updatedBody)) {
