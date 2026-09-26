@@ -9,6 +9,7 @@ import { join, dirname } from 'path';
 import os from 'os';
 import { config } from '../config.js';
 import { shell, run } from '../utils/shell.js';
+import { ensureOlsListeners } from '../utils/ols-config.js';
 
 const BACKUP_DIR = config.backupDir || '/var/backups/deols';
 const PRE_LEAN_ARCHIVE = join(BACKUP_DIR, 'pre_lean_engine_backup.tar.gz');
@@ -422,6 +423,9 @@ export default async function leanEngineRoutes(app) {
           (block) => {
             let updated = block;
 
+            // Strip any invalid/legacy maxIdleTime lines
+            updated = updated.replace(/\n\s*maxIdleTime\s+[^\r\n]*/gi, '');
+
             // 1. maxConns
             if (/maxConns\s+\d+/i.test(updated)) {
               updated = updated.replace(/maxConns\s+\d+/i, `maxConns                ${metrics.phpWorkers}`);
@@ -443,14 +447,7 @@ export default async function leanEngineRoutes(app) {
               updated = updated.replace(/\{/, `{\n  env                     LSAPI_PGRP_MAX_IDLE=${metrics.idleTimeout}`);
             }
 
-            // 4. maxIdleTime
-            if (/maxIdleTime\s+\d+/i.test(updated)) {
-              updated = updated.replace(/maxIdleTime\s+\d+/i, `maxIdleTime            ${metrics.idleTimeout}`);
-            } else {
-              updated = updated.replace(/\{/, `{\n  maxIdleTime            ${metrics.idleTimeout}`);
-            }
-
-            // 5. pcKeepAliveTimeout
+            // 4. pcKeepAliveTimeout
             if (/pcKeepAliveTimeout\s+\d+/i.test(updated)) {
               updated = updated.replace(/pcKeepAliveTimeout\s+\d+/i, `pcKeepAliveTimeout      ${metrics.idleTimeout}`);
             } else {
@@ -462,6 +459,7 @@ export default async function leanEngineRoutes(app) {
         );
 
         writeFileSync(olsConfPath, content, 'utf-8');
+        ensureOlsListeners(olsConfPath);
 
         // Validate OpenLiteSpeed syntax
         if (process.platform === 'linux' && existsSync(join(config.olsRoot, 'bin', 'lswsctrl'))) {
@@ -629,9 +627,7 @@ innodb_file_per_table          = 1
             if (/env\s+LSAPI_PGRP_MAX_IDLE=\d+/i.test(updated)) {
               updated = updated.replace(/env\s+LSAPI_PGRP_MAX_IDLE=\d+/i, 'env                     LSAPI_PGRP_MAX_IDLE=300');
             }
-            if (/maxIdleTime\s+\d+/i.test(updated)) {
-              updated = updated.replace(/maxIdleTime\s+\d+/i, 'maxIdleTime            300');
-            }
+            updated = updated.replace(/\n\s*maxIdleTime\s+[^\r\n]*/gi, '');
             if (/pcKeepAliveTimeout\s+\d+/i.test(updated)) {
               updated = updated.replace(/pcKeepAliveTimeout\s+\d+/i, 'pcKeepAliveTimeout      60');
             }
@@ -639,6 +635,7 @@ innodb_file_per_table          = 1
           }
         );
         writeFileSync(olsConfPath, content, 'utf-8');
+        ensureOlsListeners(olsConfPath);
       } catch {}
     }
 

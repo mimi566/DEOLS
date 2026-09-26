@@ -8,6 +8,7 @@ import { join } from 'path';
 import os from 'os';
 import { config } from '../config.js';
 import { shell, run } from '../utils/shell.js';
+import { ensureOlsListeners } from '../utils/ols-config.js';
 
 const BACKUP_DIR = config.backupDir || '/var/backups/deols';
 const SYSTEM_DEFAULTS_ARCHIVE = join(BACKUP_DIR, 'system_defaults.tar.gz');
@@ -361,6 +362,8 @@ export default async function tunerRoutes(app) {
           /(extprocessor\s+lsphp[a-zA-Z0-9_-]*\s*\{[\s\S]*?\})/gi,
           (block) => {
             let updated = block;
+            // Strip any invalid/legacy directives
+            updated = updated.replace(/\n\s*maxIdleTime\s+[^\r\n]*/gi, '');
             // Update maxConns
             if (/maxConns\s+\d+/i.test(updated)) {
               updated = updated.replace(/maxConns\s+\d+/i, `maxConns                ${allocations.phpWorkers}`);
@@ -377,7 +380,8 @@ export default async function tunerRoutes(app) {
           }
         );
 
-        writeFileSync(olsConfPath, content);
+        writeFileSync(olsConfPath, content, 'utf-8');
+        ensureOlsListeners(olsConfPath);
 
         // Validate OLS configuration syntax
         if (process.platform === 'linux' && existsSync(join(config.olsRoot, 'bin', 'lswsctrl'))) {
