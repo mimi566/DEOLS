@@ -231,6 +231,15 @@ async function bootstrap() {
       app.log.warn(`OLS initial sync warning: ${e.message}`);
     }
 
+    // Initialize and ensure phpMyAdmin 1-Click SSO context and socket bridge
+    try {
+      const { ensureOlsPmaContext } = await import('./services/pma.js');
+      await ensureOlsPmaContext();
+      app.log.info('✓ phpMyAdmin 1-Click SSO context & database socket bridge ready');
+    } catch (e) {
+      app.log.warn(`phpMyAdmin initialization warning: ${e.message}`);
+    }
+
     // Initialize and start server-side automation & cron engine
     startAutomationDaemon();
     app.log.info('✓ Server-side automation daemon started (WP-Cron, SSL renewal, OLS maintenance)');

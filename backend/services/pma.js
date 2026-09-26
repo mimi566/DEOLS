@@ -49,15 +49,44 @@ export async function getPmaStatus() {
 }
 
 /**
- * Ensure config.inc.php is configured for Single Sign-On (SSO)
+ * Extract or generate blowfish secret from config.inc.php
+ */
+export function getPmaSecret(pmaPath) {
+  const cfgFile = join(pmaPath, 'config.inc.php');
+  if (existsSync(cfgFile)) {
+    try {
+      const content = readFileSync(cfgFile, 'utf-8');
+      const match = content.match(/\$cfg\['blowfish_secret'\]\s*=\s*['"]([^'"]+)['"];/);
+      if (match && match[1]) return match[1];
+    } catch {}
+  }
+  return config.cookieSecret || 'deols_pma_secret_blowfish_32chars';
+}
+
+/**
+ * Encrypt SSO payload using AES-256-CBC for zero-file stateless authentication
+ */
+export function encryptSsoPayload(payload, secret) {
+  const key = crypto.createHash('sha256').update(secret).digest();
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
+  let encrypted = cipher.update(JSON.stringify(payload), 'utf8', 'base64');
+  encrypted += cipher.final('base64');
+  return Buffer.from(iv.toString('base64') + ':' + encrypted).toString('base64url');
+}
+
+/**
+ * Ensure config.inc.php is configured for Single Sign-On (SSO) and Unix socket connection
  */
 export function ensurePmaConfiguration(pmaPath) {
   const cfgFile = join(pmaPath, 'config.inc.php');
-  const blowfishSecret = generatePassword(32, false);
+  const existingSecret = getPmaSecret(pmaPath);
+  const blowfishSecret = (existingSecret && existingSecret.length >= 16) ? existingSecret : generatePassword(32, false);
+
   const configContent = `<?php
 /**
  * phpMyAdmin Configuration - Managed by DEOLS
- * Single Sign-On (SSO) and Secure MariaDB Bridge
+ * Single Sign-On (SSO) and Secure MariaDB Socket Bridge
  */
 declare(strict_types=1);
 
@@ -70,6 +99,8 @@ $cfg['Servers'][$i]['SignonSession'] = 'DEOLS_PMA_SSO';
 $cfg['Servers'][$i]['SignonURL'] = 'autologin.php';
 $cfg['Servers'][$i]['SignonCookieParams'] = ['path' => '/'];
 $cfg['Servers'][$i]['host'] = 'localhost';
+$cfg['Servers'][$i]['port'] = '';
+$cfg['Servers'][$i]['socket'] = file_exists('/run/mysqld/mysqld.sock') ? '/run/mysqld/mysqld.sock' : (file_exists('/var/run/mysqld/mysqld.sock') ? '/var/run/mysqld/mysqld.sock' : (file_exists('/tmp/mysql.sock') ? '/tmp/mysql.sock' : ''));
 $cfg['Servers'][$i]['connect_type'] = 'socket';
 $cfg['Servers'][$i]['compress'] = false;
 $cfg['Servers'][$i]['AllowNoPassword'] = true;
@@ -84,16 +115,19 @@ $cfg['DefaultLang'] = 'en';
 $cfg['ServerDefault'] = 1;
 `;
 
-  if (!existsSync(cfgFile)) {
-    try {
-      writeFileSync(cfgFile, configContent, 'utf-8');
-    } catch {}
-  } else {
+  let needsWrite = true;
+  if (existsSync(cfgFile)) {
     try {
       const current = readFileSync(cfgFile, 'utf-8');
-      if (!current.includes('DEOLS_PMA_SSO') || current.includes("'auth_type'] = 'cookie'") || current.includes('"auth_type"] = "cookie"')) {
-        writeFileSync(cfgFile, configContent, 'utf-8');
+      if (current.includes('DEOLS_PMA_SSO') && current.includes("'auth_type'] = 'signon'") && current.includes("'connect_type'] = 'socket'")) {
+        needsWrite = false;
       }
+    } catch {}
+  }
+
+  if (needsWrite) {
+    try {
+      writeFileSync(cfgFile, configContent, 'utf-8');
     } catch {}
   }
 }
@@ -108,7 +142,14 @@ export async function writeAutologinBridge(pmaPath) {
  */
 declare(strict_types=1);
 
-// Configure session cookies to match phpMyAdmin
+// Ensure socket symlink exists for lsphp if needed
+if (!file_exists('/tmp/mysql.sock') && file_exists('/run/mysqld/mysqld.sock')) {
+    @symlink('/run/mysqld/mysqld.sock', '/tmp/mysql.sock');
+} elseif (!file_exists('/tmp/mysql.sock') && file_exists('/var/run/mysqld/mysqld.sock')) {
+    @symlink('/var/run/mysqld/mysqld.sock', '/tmp/mysql.sock');
+}
+
+// Ensure session settings
 if (session_status() === PHP_SESSION_NONE) {
     ini_set('session.use_cookies', '1');
     ini_set('session.use_only_cookies', '1');
@@ -118,42 +159,80 @@ if (session_status() === PHP_SESSION_NONE) {
     @session_start();
 }
 
+function decryptSsoPayload(string $data, string $secret): ?array {
+    $decoded = base64_decode(strtr($data, '-_', '+/'));
+    if (!$decoded || !str_contains($decoded, ':')) return null;
+    [$ivBase64, $encBase64] = explode(':', $decoded, 2);
+    $iv = base64_decode($ivBase64);
+    $key = hash('sha256', $secret, true);
+    $decrypted = openssl_decrypt(base64_decode($encBase64), 'AES-256-CBC', $key, OPENSSL_RAW_DATA, $iv);
+    if (!$decrypted) return null;
+    $json = json_decode($decrypted, true);
+    return is_array($json) ? $json : null;
+}
+
+$ssoEnc = $_GET['sso'] ?? ($_POST['sso'] ?? '');
 $token = $_GET['token'] ?? ($_POST['token'] ?? '');
-$tokenFile = '/tmp/deols_pma_tokens.json';
+$authData = null;
 
-if (!empty($token) && file_exists($tokenFile)) {
-    $content = @file_get_contents($tokenFile);
-    $tokens = $content ? json_decode($content, true) : [];
+// Method 1: Encrypted in-memory payload (Zero file/tmp dependency)
+if (!empty($ssoEnc)) {
+    $secret = 'deols_pma_secret_blowfish_32chars';
+    $cfgPath = __DIR__ . '/config.inc.php';
+    if (file_exists($cfgPath)) {
+        $cfgText = @file_get_contents($cfgPath);
+        if (preg_match("/\\\$cfg\\['blowfish_secret'\\]\\s*=\\s*['\"]([^'\"]+)['\"];/", $cfgText, $m)) {
+            $secret = $m[1];
+        }
+    }
+    $decrypted = decryptSsoPayload($ssoEnc, $secret);
+    if ($decrypted && isset($decrypted['time']) && (time() - (int)$decrypted['time']) < 300) {
+        $authData = $decrypted;
+    }
+}
 
-    if (is_array($tokens) && isset($tokens[$token])) {
-        $data = $tokens[$token];
-        // Validate token age (valid for 180 seconds)
-        if (isset($data['time']) && (time() - (int)$data['time']) < 180) {
-            // Delete one-time token
-            unset($tokens[$token]);
-            @file_put_contents($tokenFile, json_encode($tokens));
-            @chmod($tokenFile, 0666);
-
-            // Populate phpMyAdmin Signon Session
-            $_SESSION['PMA_single_signon_user'] = $data['user'];
-            $_SESSION['PMA_single_signon_password'] = $data['pass'];
-            $_SESSION['PMA_single_signon_host'] = 'localhost';
-            $_SESSION['PMA_single_signon_port'] = '';
-            $_SESSION['PMA_single_signon_controluser'] = '';
-            $_SESSION['PMA_single_signon_controlpass'] = '';
-
-            // Flush session to disk before HTTP redirect
-            session_write_close();
-
-            $targetDb = !empty($data['db']) ? urlencode($data['db']) : '';
-            $dest = 'index.php' . ($targetDb ? '?route=/database/structure&db=' . $targetDb : '');
-            header('Location: ' . $dest);
-            exit;
+// Method 2: File token lookup fallback
+if (!$authData && !empty($token)) {
+    $tokenFiles = [
+        __DIR__ . '/tokens.json',
+        '/tmp/deols_pma_tokens.json',
+        '/opt/deols/data/pma_tokens.json'
+    ];
+    foreach ($tokenFiles as $tf) {
+        if (file_exists($tf)) {
+            $content = @file_get_contents($tf);
+            $tokens = $content ? json_decode($content, true) : [];
+            if (is_array($tokens) && isset($tokens[$token])) {
+                $d = $tokens[$token];
+                if (isset($d['time']) && (time() - (int)$d['time']) < 300) {
+                    $authData = $d;
+                    unset($tokens[$token]);
+                    @file_put_contents($tf, json_encode($tokens));
+                    break;
+                }
+            }
         }
     }
 }
 
-// Fallback login form if session expired
+// If authenticated data found, populate signon session
+if ($authData && !empty($authData['user'])) {
+    $_SESSION['PMA_single_signon_user'] = $authData['user'];
+    $_SESSION['PMA_single_signon_password'] = $authData['pass'] ?? '';
+    $_SESSION['PMA_single_signon_host'] = 'localhost';
+    $_SESSION['PMA_single_signon_port'] = '';
+    $_SESSION['PMA_single_signon_controluser'] = '';
+    $_SESSION['PMA_single_signon_controlpass'] = '';
+
+    session_write_close();
+
+    $targetDb = !empty($authData['db']) ? urlencode($authData['db']) : '';
+    $dest = 'index.php' . ($targetDb ? '?route=/database/structure&db=' . $targetDb : '');
+    header('Location: ' . $dest);
+    exit;
+}
+
+// Fallback manual login form if user submitted
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['pma_username'])) {
     $_SESSION['PMA_single_signon_user'] = $_POST['pma_username'];
     $_SESSION['PMA_single_signon_password'] = $_POST['pma_password'] ?? '';
@@ -274,25 +353,34 @@ export async function ensureOlsPmaContext(pmaPath) {
 
   if (process.platform === 'linux') {
     try {
-      // 1. Ensure permissions are nobody:nogroup and 755
+      // 1. Ensure unix socket symlink for OpenLiteSpeed PHP
+      if (!existsSync('/tmp/mysql.sock')) {
+        if (existsSync('/run/mysqld/mysqld.sock')) {
+          await shell('ln -sfn /run/mysqld/mysqld.sock /tmp/mysql.sock 2>/dev/null || true');
+        } else if (existsSync('/var/run/mysqld/mysqld.sock')) {
+          await shell('ln -sfn /var/run/mysqld/mysqld.sock /tmp/mysql.sock 2>/dev/null || true');
+        }
+      }
+
+      // 2. Ensure permissions are nobody:nogroup and 755
       await shell(`chown -R nobody:nogroup "${pmaDir}" 2>/dev/null || chown -R nobody:www-data "${pmaDir}" 2>/dev/null || true`);
       await shell(`find "${pmaDir}" -type d -exec chmod 755 {} \\; 2>/dev/null || true`);
       await shell(`find "${pmaDir}" -type f -exec chmod 644 {} \\; 2>/dev/null || true`);
 
-      // 2. Symlink to Example vhost html directory (serves Server IP default traffic on port 80/443)
+      // 3. Symlink to Example vhost html directory (serves Server IP default traffic on port 80/443)
       if (existsSync('/usr/local/lsws/Example/html')) {
         await shell(`ln -sfn "${pmaDir}" /usr/local/lsws/Example/html/phpmyadmin 2>/dev/null || true`);
         await shell('chown -h nobody:nogroup /usr/local/lsws/Example/html/phpmyadmin 2>/dev/null || true');
       }
 
-      // 3. Symlink to /var/www/html
+      // 4. Symlink to /var/www/html
       mkdirSync('/var/www/html', { recursive: true });
       await shell(`ln -sfn "${pmaDir}" /var/www/html/phpmyadmin 2>/dev/null || true`);
       await shell('chown -h nobody:nogroup /var/www/html/phpmyadmin 2>/dev/null || true');
     } catch {}
   }
 
-  // 4. Also register context in httpd_config.conf
+  // 5. Also register context in httpd_config.conf
   const httpdConf = join(config.olsRoot, 'conf', 'httpd_config.conf');
   if (existsSync(httpdConf)) {
     try {
@@ -433,39 +521,47 @@ export async function generatePmaSsoSession(dbName = null, domain = null, reqHos
   const pass = creds?.pass || '';
   const db = creds?.db || dbName || '';
 
-  // Generate random crypto token
-  const token = crypto.randomBytes(24).toString('hex');
-
-  // Save to /tmp/deols_pma_tokens.json
-  const tokenFile = '/tmp/deols_pma_tokens.json';
-  let tokens = {};
-  if (existsSync(tokenFile)) {
-    try {
-      tokens = JSON.parse(readFileSync(tokenFile, 'utf-8'));
-    } catch {}
-  }
-
-  // Purge expired tokens (> 180s old)
   const now = Math.floor(Date.now() / 1000);
-  for (const k of Object.keys(tokens)) {
-    if (tokens[k]?.time && (now - tokens[k].time) > 180) {
-      delete tokens[k];
-    }
-  }
+  const pmaSecret = getPmaSecret(pmaPath);
 
-  tokens[token] = {
+  // 1. Generate Stateless Encrypted AES Payload
+  const payload = {
     user,
     pass,
     db,
     time: now,
   };
+  const ssoEnc = encryptSsoPayload(payload, pmaSecret);
 
-  try {
-    writeFileSync(tokenFile, JSON.stringify(tokens), { mode: 0o666 });
-    if (process.platform === 'linux') {
-      await shell('chmod 666 /tmp/deols_pma_tokens.json 2>/dev/null || true');
-    }
-  } catch {}
+  // 2. Generate random crypto token for file fallback
+  const token = crypto.randomBytes(24).toString('hex');
+  const tokenRecord = { user, pass, db, time: now };
+
+  const tokenFiles = [
+    join(pmaPath, 'tokens.json'),
+    '/tmp/deols_pma_tokens.json',
+    join(config.dataDir, 'pma_tokens.json'),
+  ];
+
+  for (const tf of tokenFiles) {
+    try {
+      let tokens = {};
+      if (existsSync(tf)) {
+        try { tokens = JSON.parse(readFileSync(tf, 'utf-8')); } catch {}
+      }
+      // Purge expired tokens (> 300s old)
+      for (const k of Object.keys(tokens)) {
+        if (tokens[k]?.time && (now - tokens[k].time) > 300) {
+          delete tokens[k];
+        }
+      }
+      tokens[token] = tokenRecord;
+      writeFileSync(tf, JSON.stringify(tokens), { mode: 0o666 });
+      if (process.platform === 'linux') {
+        await shell(`chmod 666 "${tf}" 2>/dev/null || true`);
+      }
+    } catch {}
+  }
 
   // Determine server IP or Host
   let serverIp = '127.0.0.1';
@@ -480,11 +576,12 @@ export async function generatePmaSsoSession(dbName = null, domain = null, reqHos
     ? reqHost
     : (serverIp !== '127.0.0.1' ? serverIp : '127.0.0.1');
 
-  const ssoUrl = `http://${host}/phpmyadmin/autologin.php?token=${token}`;
+  const ssoUrl = `http://${host}/phpmyadmin/autologin.php?sso=${ssoEnc}&token=${token}`;
 
   return {
     success: true,
     token,
+    ssoEnc,
     ssoUrl,
     user,
     db,

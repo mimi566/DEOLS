@@ -333,7 +333,7 @@ WantedBy=multi-user.target
   const ssoRes = await generatePmaSsoSession(testDbName, cleanDomain, '127.0.0.1');
   assert(ssoRes.success === true, 'phpMyAdmin SSO session generated successfully');
   assert(typeof ssoRes.token === 'string' && ssoRes.token.length >= 24, `SSO token created with sufficient entropy (${ssoRes.token.substring(0, 8)}…)`);
-  assert(ssoRes.ssoUrl.includes('/phpmyadmin/autologin.php?token='), `SSO launch URL properly routed to autologin bridge: ${ssoRes.ssoUrl}`);
+  assert(ssoRes.ssoUrl.includes('/phpmyadmin/autologin.php?') && ssoRes.ssoUrl.includes('sso='), `SSO launch URL properly routed with encrypted stateless payload: ${ssoRes.ssoUrl.substring(0, 80)}…`);
 
   // Cleanup sandbox
   try {
