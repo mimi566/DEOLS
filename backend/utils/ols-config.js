@@ -326,11 +326,10 @@ vhssl {
 export function generateCyberpanelVhConf(domain, docRoot, logsDir, phpVersion = '83', enableWildcard = false, systemUser = null) {
   const phpSuffix = phpVersion || '83';
   const wildcardAliases = enableWildcard ? `, *.${domain}` : '';
-  const runUser = systemUser || 'nobody';
 
   return `# ─────────────────────────────────────────────────────────────
 # OpenLiteSpeed Virtual Host Configuration for ${domain}
-# Managed by DEOLS (Multi-Tenant User Isolation & cgroups v2)
+# Managed by DEOLS (CyberPanel-compatible architecture)
 # ─────────────────────────────────────────────────────────────
 
 docRoot                   ${docRoot}
@@ -339,7 +338,7 @@ vhAliases                 www.${domain}${wildcardAliases}
 adminEmails               admin@${domain}
 enableGzip                1
 enableBr                  1
-cgroups                   1
+cgroups                   0
 
 index {
   useServer               0
@@ -381,8 +380,6 @@ extprocessor lsphp${phpSuffix} {
   memHardLimit            2047M
   procSoftLimit           1400
   procHardLimit           1500
-  extUser                 ${runUser}
-  extGroup                www-data
 }
 
 rewrite {

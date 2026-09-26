@@ -52,7 +52,7 @@ export async function ensureSystemUser(username, domain) {
 }
 
 /**
- * Enforce strict POSIX permissions and ownership on site directory
+ * Enforce POSIX permissions and ownership on site directory for OpenLiteSpeed
  */
 export async function enforceDirectorySecurity(domain, username) {
   const siteDir = join(config.webRoot, domain);
@@ -63,16 +63,23 @@ export async function enforceDirectorySecurity(domain, username) {
 
   if (process.platform === 'linux') {
     try {
-      const cleanUser = username.replace(/[^a-z0-9_-]/gi, '');
-      // 1. Set base directory ownership to {user}:www-data
-      await shell(`chown -R ${cleanUser}:www-data "${siteDir}" 2>/dev/null || true`);
-      // 2. Set directory permissions to 750 (Owner full, Group read/exec, World none)
-      await shell(`chmod 750 "${siteDir}" 2>/dev/null || true`);
-      // 3. Document root permissions
+      // 1. Ensure /tmp/lshttpd exists for PHP sockets
+      await shell('mkdir -p /tmp/lshttpd 2>/dev/null && chmod 1777 /tmp/lshttpd 2>/dev/null || true');
+
+      // 2. OpenLiteSpeed runs as nobody:nogroup (or nobody:www-data).
+      // Web directories MUST be 755 and owned by nobody:nogroup so OLS worker can traverse and serve files without 403 Forbidden!
+      await shell(`chown -R nobody:nogroup "${siteDir}" 2>/dev/null || chown -R nobody:www-data "${siteDir}" 2>/dev/null || true`);
+      await shell(`chmod 755 "${siteDir}" 2>/dev/null || true`);
+
+      // 3. Document root permissions (755 directories, 644 files)
       if (existsSync(docRoot)) {
         await shell(`find "${docRoot}" -type d -exec chmod 755 {} \\; 2>/dev/null || true`);
         await shell(`find "${docRoot}" -type f -exec chmod 644 {} \\; 2>/dev/null || true`);
+        if (existsSync(join(docRoot, 'wp-config.php'))) {
+          await shell(`chmod 644 "${join(docRoot, 'wp-config.php')}" 2>/dev/null || true`);
+        }
       }
+
       // 4. Logs directory permissions
       if (existsSync(logsDir)) {
         await shell(`chmod 775 "${logsDir}" 2>/dev/null || true`);
