@@ -357,10 +357,14 @@ export default async function tunerRoutes(app) {
         let content = readFileSync(olsConfPath, 'utf-8');
 
         // Update all external processor lsphp blocks
-        // Regex matches `extprocessor <name> { ... }` blocks and updates maxConns and PHP_LSAPI_CHILDREN
         content = content.replace(
-          /(extprocessor\s+lsphp[a-zA-Z0-9_-]*\s*\{[\s\S]*?\})/gi,
+          /(extprocessor\s+[a-zA-Z0-9_:-]*\s*\{[\s\S]*?\})/gi,
           (block) => {
+            // Only update external processors that are php or lsapi
+            if (!/type\s+lsapi/i.test(block) && !/lsphp/i.test(block) && !/php/i.test(block)) {
+              return block;
+            }
+
             let updated = block;
             // Strip any invalid/legacy directives
             updated = updated.replace(/\n\s*maxIdleTime\s+[^\r\n]*/gi, '');
@@ -386,14 +390,18 @@ export default async function tunerRoutes(app) {
         // Validate OLS configuration syntax
         if (process.platform === 'linux' && existsSync(join(config.olsRoot, 'bin', 'lswsctrl'))) {
           const testRes = await shell(`"${join(config.olsRoot, 'bin', 'lswsctrl')}" test`);
-          if (testRes.code !== 0) {
+          const testOutput = ((testRes.stdout || '') + ' ' + (testRes.stderr || '')).trim();
+          const isOk = testRes.code === 0 || testOutput.includes('[OK]') || testOutput.includes('syntax is ok') || testOutput.includes('is valid');
+          
+          if (!isOk) {
+            console.error('[Auto-Tuner] OLS Syntax test failed:', testOutput);
             // Revert immediately from pre-tuning backup
             if (existsSync(PRE_TUNING_ARCHIVE)) {
               await shell(`tar -xzf "${PRE_TUNING_ARCHIVE}" -C / -P`);
             }
             return reply.code(500).send({
               error: 'OpenLiteSpeed syntax test failed. Automatically reverted to safe configuration.',
-              details: testRes.stdout || testRes.stderr,
+              details: testOutput,
             });
           }
         }

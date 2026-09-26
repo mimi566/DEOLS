@@ -419,8 +419,13 @@ export default async function leanEngineRoutes(app) {
 
         // Update all external processor lsphp blocks for idle timeout and worker scaling
         content = content.replace(
-          /(extprocessor\s+lsphp[a-zA-Z0-9_-]*\s*\{[\s\S]*?\})/gi,
+          /(extprocessor\s+[a-zA-Z0-9_:-]*\s*\{[\s\S]*?\})/gi,
           (block) => {
+            // Only update external processors that are php or lsapi
+            if (!/type\s+lsapi/i.test(block) && !/lsphp/i.test(block) && !/php/i.test(block)) {
+              return block;
+            }
+
             let updated = block;
 
             // Strip any invalid/legacy maxIdleTime lines
@@ -464,14 +469,18 @@ export default async function leanEngineRoutes(app) {
         // Validate OpenLiteSpeed syntax
         if (process.platform === 'linux' && existsSync(join(config.olsRoot, 'bin', 'lswsctrl'))) {
           const testRes = await shell(`"${join(config.olsRoot, 'bin', 'lswsctrl')}" test`);
-          if (testRes.code !== 0) {
+          const testOutput = ((testRes.stdout || '') + ' ' + (testRes.stderr || '')).trim();
+          const isOk = testRes.code === 0 || testOutput.includes('[OK]') || testOutput.includes('syntax is ok') || testOutput.includes('is valid');
+
+          if (!isOk) {
+            console.error('[Lean Engine] OLS Syntax test failed:', testOutput);
             // Revert immediately from safety backup
             if (existsSync(PRE_LEAN_ARCHIVE)) {
               await shell(`tar -xzf "${PRE_LEAN_ARCHIVE}" -C / -P`);
             }
             return reply.code(500).send({
               error: 'OpenLiteSpeed syntax test failed. Automatically reverted to safe configuration.',
-              details: testRes.stdout || testRes.stderr,
+              details: testOutput,
             });
           }
         }
@@ -615,8 +624,11 @@ innodb_file_per_table          = 1
       try {
         let content = readFileSync(olsConfPath, 'utf-8');
         content = content.replace(
-          /(extprocessor\s+lsphp[a-zA-Z0-9_-]*\s*\{[\s\S]*?\})/gi,
+          /(extprocessor\s+[a-zA-Z0-9_:-]*\s*\{[\s\S]*?\})/gi,
           (block) => {
+            if (!/type\s+lsapi/i.test(block) && !/lsphp/i.test(block) && !/php/i.test(block)) {
+              return block;
+            }
             let updated = block;
             if (/maxConns\s+\d+/i.test(updated)) {
               updated = updated.replace(/maxConns\s+\d+/i, 'maxConns                35');

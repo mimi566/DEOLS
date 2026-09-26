@@ -4,8 +4,77 @@
 
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import os from 'os';
 import { config } from '../config.js';
 import { shell } from '../utils/shell.js';
+
+/**
+ * Calculates real system memory usage by excluding Linux page cache (buff/cache).
+ * Uses MemAvailable from /proc/meminfo instead of raw MemFree.
+ */
+export function getSystemMemoryMetrics() {
+  if (process.platform === 'linux' && existsSync('/proc/meminfo')) {
+    try {
+      const memInfo = readFileSync('/proc/meminfo', 'utf8');
+
+      const totalMatch = memInfo.match(/MemTotal:\s+(\d+)\s+kB/);
+      const availMatch = memInfo.match(/MemAvailable:\s+(\d+)\s+kB/);
+      const freeMatch = memInfo.match(/MemFree:\s+(\d+)\s+kB/);
+      const buffersMatch = memInfo.match(/Buffers:\s+(\d+)\s+kB/);
+      const cachedMatch = memInfo.match(/^Cached:\s+(\d+)\s+kB/m);
+
+      if (totalMatch) {
+        const totalKb = parseInt(totalMatch[1], 10);
+        let availKb;
+
+        if (availMatch) {
+          availKb = parseInt(availMatch[1], 10);
+        } else {
+          // Fallback for older Linux kernels (< 3.14) without MemAvailable
+          const freeKb = freeMatch ? parseInt(freeMatch[1], 10) : 0;
+          const buffersKb = buffersMatch ? parseInt(buffersMatch[1], 10) : 0;
+          const cachedKb = cachedMatch ? parseInt(cachedMatch[1], 10) : 0;
+          availKb = freeKb + buffersKb + cachedKb;
+        }
+
+        const usedKb = Math.max(0, totalKb - availKb);
+        const usedPercent = parseFloat(((usedKb / totalKb) * 100).toFixed(1));
+
+        return {
+          total: totalKb * 1024,
+          used: usedKb * 1024,
+          free: availKb * 1024,
+          available: availKb * 1024,
+          totalMB: Math.round(totalKb / 1024),
+          usedMB: Math.round(usedKb / 1024),
+          availableMB: Math.round(availKb / 1024),
+          usedPercentage: usedPercent,
+          percent: usedPercent,
+        };
+      }
+    } catch (err) {
+      console.error('Error parsing /proc/meminfo:', err);
+    }
+  }
+
+  // Windows / macOS / Fallback via os module
+  const total = os.totalmem ? os.totalmem() : 2147483648;
+  const free = os.freemem ? os.freemem() : 1073741824;
+  const used = total - free;
+  const usedPercent = parseFloat(((used / total) * 100).toFixed(1));
+
+  return {
+    total,
+    used,
+    free,
+    available: free,
+    totalMB: Math.round(total / (1024 * 1024)),
+    usedMB: Math.round(used / (1024 * 1024)),
+    availableMB: Math.round(free / (1024 * 1024)),
+    usedPercentage: usedPercent,
+    percent: usedPercent,
+  };
+}
 
 export default async function systemRoutes(app) {
   app.addHook('preHandler', app.authenticate);
@@ -14,9 +83,8 @@ export default async function systemRoutes(app) {
   app.get('/overview', async () => {
     const si = await import('systeminformation');
 
-    const [cpu, mem, disk, os, time, load, net] = await Promise.all([
+    const [cpu, disk, osInfo, time, load, net] = await Promise.all([
       si.cpu(),
-      si.mem(),
       si.fsSize(),
       si.osInfo(),
       si.time(),
@@ -24,11 +92,13 @@ export default async function systemRoutes(app) {
       si.networkInterfaces(),
     ]);
 
+    const mem = getSystemMemoryMetrics();
+
     return {
-      hostname: os.hostname,
-      os: `${os.distro} ${os.release}`,
-      kernel: os.kernel,
-      arch: os.arch,
+      hostname: osInfo.hostname,
+      os: `${osInfo.distro} ${osInfo.release}`,
+      kernel: osInfo.kernel,
+      arch: osInfo.arch,
       uptime: time.uptime,
       cpu: {
         model: `${cpu.manufacturer} ${cpu.brand}`,
@@ -40,7 +110,12 @@ export default async function systemRoutes(app) {
         total: mem.total,
         used: mem.used,
         free: mem.free,
-        usedPercent: Math.round((mem.used / mem.total) * 100),
+        available: mem.available,
+        totalMB: mem.totalMB,
+        usedMB: mem.usedMB,
+        availableMB: mem.availableMB,
+        usedPercent: mem.usedPercentage,
+        percent: mem.usedPercentage,
       },
       disk: disk
         .filter((d) => d.mount === '/' || d.mount.startsWith('/var'))
@@ -67,14 +142,19 @@ export default async function systemRoutes(app) {
   // ─── Real-time CPU/Memory (lightweight poll) ──────────
   app.get('/stats', async () => {
     const si = await import('systeminformation');
-    const [load, mem] = await Promise.all([si.currentLoad(), si.mem()]);
+    const load = await si.currentLoad();
+    const mem = getSystemMemoryMetrics();
 
     return {
       cpu: Math.round(load.currentLoad * 100) / 100,
       memory: {
         used: mem.used,
         total: mem.total,
-        percent: Math.round((mem.used / mem.total) * 100),
+        available: mem.available,
+        totalMB: mem.totalMB,
+        usedMB: mem.usedMB,
+        availableMB: mem.availableMB,
+        percent: mem.usedPercentage,
       },
       timestamp: Date.now(),
     };

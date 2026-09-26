@@ -4963,7 +4963,9 @@ async function applyTunerPreset() {
     const container = document.getElementById('content-body');
     if (container) renderAutoTuner(container);
   } else {
-    toast(res?.error || 'Failed to apply auto-tuner preset', 'error', 8000);
+    const errorMsg = res?.error || 'Failed to apply auto-tuner preset';
+    const detailMsg = res?.details ? ` (${res.details.trim().slice(0, 160)})` : '';
+    toast(errorMsg + detailMsg, 'error', 10000);
     const container = document.getElementById('content-body');
     if (container) renderAutoTuner(container);
   }
@@ -5368,7 +5370,9 @@ async function applyLeanEngine() {
     const container = document.getElementById('content-body');
     if (container) renderAutoTuner(container);
   } else {
-    toast(res?.error || 'Failed to apply Lean Engine mode', 'error', 8000);
+    const errorMsg = res?.error || 'Failed to apply Lean Engine mode';
+    const detailMsg = res?.details ? ` (${res.details.trim().slice(0, 160)})` : '';
+    toast(errorMsg + detailMsg, 'error', 10000);
     const container = document.getElementById('content-body');
     if (container) renderAutoTuner(container);
   }

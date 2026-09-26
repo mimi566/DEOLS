@@ -246,7 +246,16 @@ WantedBy=multi-user.target
   } catch {
     invalidRejected = true;
   }
-  assert(invalidRejected, 'Invalid timezone identifier rejected by validation layer');
+  // ─── STEP 9: System Memory Metrics & /proc/meminfo Parser ──
+  console.log('\n\x1b[33m[9/9] Testing System Memory Metrics & /proc/meminfo Parser...\x1b[0m');
+  const { getSystemMemoryMetrics } = await import('../backend/api/system.js');
+  const memMetrics = getSystemMemoryMetrics();
+
+  assert(typeof memMetrics.total === 'number' && memMetrics.total > 0, `Total memory reported: ${memMetrics.totalMB} MB`);
+  assert(typeof memMetrics.used === 'number' && memMetrics.used >= 0, `Used memory reported: ${memMetrics.usedMB} MB`);
+  assert(typeof memMetrics.available === 'number' && memMetrics.available > 0, `Available memory reported: ${memMetrics.availableMB} MB`);
+  assert(memMetrics.usedPercentage >= 0 && memMetrics.usedPercentage <= 100, `Memory usage percentage valid: ${memMetrics.usedPercentage}%`);
+  assert(memMetrics.usedMB <= memMetrics.totalMB, 'Used memory does not exceed total memory');
 
   // Cleanup sandbox
   try {

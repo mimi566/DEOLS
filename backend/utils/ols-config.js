@@ -3,8 +3,9 @@
 // Manages httpd_config.conf, Virtual Hosts, and Listeners
 // ─────────────────────────────────────────────────────────────
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
 import { join } from 'path';
+import { execSync } from 'child_process';
 import { config } from '../config.js';
 
 /**
@@ -24,35 +25,62 @@ export function ensureOlsListeners(httpdConfPath = null) {
     modified = true;
   }
 
-  // 2. Ensure listener Default (Port 80) is listening on *:80
-  if (/listener\s+Default\s*\{/i.test(content)) {
-    // If listener Default contains 8088, replace with 80
-    if (/listener\s+Default\s*\{[^}]*8088/s.test(content)) {
-      content = content.replace(/(listener\s+Default\s*\{[^}]*address\s+)[*0-9.:]*:8088/is, '$1*:80');
-      modified = true;
-    }
-    // If listener Default has no map entries, add fallback Example * if Example vhost exists
-    if (!/listener\s+Default\s*\{[^}]*map\s+/is.test(content) && /virtualhost\s+Example\b/i.test(content)) {
-      content = content.replace(/(listener\s+Default\s*\{)/i, '$1\n  map                     Example *');
-      modified = true;
-    }
-  } else {
-    // If no Default listener exists, check if any listener on port 80 exists
-    const hasAnyPort80 = /listener\s+[^\r\n]+\s*\{[^}]*address\s+[*0-9.:]*:80\b/s.test(content);
-    if (!hasAnyPort80) {
-      const defaultPort80Block = `
-listener Default {
-  address                 *:80
-  secure                  0
-  map                     Example *
-}
-`;
-      content += defaultPort80Block;
-      modified = true;
+  // 2. Identify all defined virtual hosts in httpd_config.conf
+  const definedVhosts = [];
+  const vhRegex = /virtualhost\s+([^\s{]+)/gi;
+  let vhMatch;
+  while ((vhMatch = vhRegex.exec(content)) !== null) {
+    if (vhMatch[1] && !definedVhosts.includes(vhMatch[1])) {
+      definedVhosts.push(vhMatch[1]);
     }
   }
 
-  // 3. Clean up conflicting or legacy DefaultHTTPS listener name
+  // 3. Ensure valid SSL certificate & key files in /usr/local/lsws/conf/
+  const confDir = join(config.olsRoot, 'conf');
+  if (!existsSync(confDir)) {
+    try { mkdirSync(confDir, { recursive: true }); } catch {}
+  }
+
+  let certPath = join(confDir, 'example.crt');
+  let keyPath = join(confDir, 'example.key');
+
+  const srvCert = join(confDir, 'server.crt');
+  const srvKey = join(confDir, 'server.key');
+  if (existsSync(srvCert) && existsSync(srvKey)) {
+    certPath = srvCert;
+    keyPath = srvKey;
+  } else if (!existsSync(certPath) || !existsSync(keyPath)) {
+    // Generate self-signed certificate if neither example nor server cert exists
+    if (process.platform === 'linux') {
+      try {
+        execSync(`openssl req -x509 -newkey rsa:2048 -keyout "${keyPath}" -out "${certPath}" -days 3650 -nodes -subj "/CN=localhost" 2>/dev/null && chmod 644 "${keyPath}" "${certPath}" 2>/dev/null || true`);
+      } catch {}
+    }
+    // Fallback stub files if still missing (dev/windows)
+    if (!existsSync(keyPath)) {
+      try { writeFileSync(keyPath, '-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n', { mode: 0o644 }); } catch {}
+    }
+    if (!existsSync(certPath)) {
+      try { writeFileSync(certPath, '-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n', { mode: 0o644 }); } catch {}
+    }
+  }
+
+  // Ensure key & certificate have world-readable permissions (0644) for OLS worker processes
+  if (process.platform === 'linux') {
+    try {
+      if (existsSync(keyPath)) chmodSync(keyPath, 0o644);
+      if (existsSync(certPath)) chmodSync(certPath, 0o644);
+    } catch {}
+  }
+
+  // 4. Automatically fix any legacy references to webadmin.key or webadmin.crt (which have 0700 permissions)
+  if (content.includes('webadmin.key') || content.includes('webadmin.crt')) {
+    content = content.replace(/\/usr\/local\/lsws\/admin\/conf\/webadmin\.key/g, keyPath);
+    content = content.replace(/\/usr\/local\/lsws\/admin\/conf\/webadmin\.crt/g, certPath);
+    modified = true;
+  }
+
+  // 5. Clean up conflicting or legacy DefaultHTTPS listener name
   if (/listener\s+DefaultHTTPS\s*\{/i.test(content)) {
     if (/listener\s+HTTPS\s*\{/i.test(content)) {
       content = content.replace(/\n?listener\s+DefaultHTTPS\s*\{[^}]*\}/s, '');
@@ -63,20 +91,48 @@ listener Default {
     }
   }
 
-  // Determine SSL cert and key paths
-  let certPath = join(config.olsRoot, 'admin', 'conf', 'webadmin.crt');
-  let keyPath = join(config.olsRoot, 'admin', 'conf', 'webadmin.key');
+  // 6. Clean up any invalid mapping lines in listeners that point to non-existent virtual hosts
+  content = content.replace(/(listener\s+[^\s{]+\s*\{[\s\S]*?\})/gi, (listenerBlock) => {
+    let updatedListener = listenerBlock;
+    const mapLines = [...updatedListener.matchAll(/map\s+([^\s]+)\s+([^\r\n]+)/gi)];
+    for (const mMap of mapLines) {
+      const vhName = mMap[1];
+      if (!definedVhosts.includes(vhName)) {
+        const cleanRegex = new RegExp(`\\n?\\s*map\\s+${vhName.replace(/\./g, '\\.')}\\s+[^\\r\\n]*`, 'gi');
+        updatedListener = updatedListener.replace(cleanRegex, '');
+        modified = true;
+      }
+    }
+    return updatedListener;
+  });
 
-  if (!existsSync(certPath) || !existsSync(keyPath)) {
-    const exCert = join(config.olsRoot, 'conf', 'example.crt');
-    const exKey = join(config.olsRoot, 'conf', 'example.key');
-    if (existsSync(exCert) && existsSync(exKey)) {
-      certPath = exCert;
-      keyPath = exKey;
+  const defaultMapLine = definedVhosts.includes('Example') ? '  map                     Example *' : (definedVhosts.length > 0 ? `  map                     ${definedVhosts[0]} *` : '');
+
+  // 7. Ensure listener Default (Port 80) is listening on *:80
+  if (/listener\s+Default\s*\{/i.test(content)) {
+    if (/listener\s+Default\s*\{[^}]*8088/s.test(content)) {
+      content = content.replace(/(listener\s+Default\s*\{[^}]*address\s+)[*0-9.:]*:8088/is, '$1*:80');
+      modified = true;
+    }
+    if (!/listener\s+Default\s*\{[^}]*map\s+/is.test(content) && defaultMapLine) {
+      content = content.replace(/(listener\s+Default\s*\{)/i, `$1\n${defaultMapLine}`);
+      modified = true;
+    }
+  } else {
+    const hasAnyPort80 = /listener\s+[^\r\n]+\s*\{[^}]*address\s+[*0-9.:]*:80\b/s.test(content);
+    if (!hasAnyPort80) {
+      const defaultPort80Block = `
+listener Default {
+  address                 *:80
+  secure                  0
+${defaultMapLine ? defaultMapLine + '\n' : ''}}
+`;
+      content += defaultPort80Block;
+      modified = true;
     }
   }
 
-  // 4. Ensure canonical listener HTTPS (Port 443) exists with standard General & SSL directives
+  // 8. Ensure canonical listener HTTPS (Port 443) exists with standard General & SSL directives
   if (!/listener\s+HTTPS\s*\{/i.test(content) && !/listener\s+[^\r\n]+\s*\{[^}]*address\s+[*0-9.:]*:443\b/s.test(content)) {
     const defaultPort443Block = `
 listener HTTPS {
@@ -84,9 +140,7 @@ listener HTTPS {
   secure                  1
   keyFile                 ${keyPath}
   certFile                ${certPath}
-  sslProtocol             30
-  map                     Example *
-}
+${defaultMapLine ? defaultMapLine + '\n' : ''}}
 `;
     content += defaultPort443Block;
     modified = true;
@@ -111,20 +165,26 @@ listener HTTPS {
         }
         modified = true;
       }
-      if (!/keyFile\s+/i.test(updatedBody)) {
-        updatedBody += `\n  keyFile                 ${keyPath}`;
+      // Ensure keyFile is correct and not webadmin
+      if (!/keyFile\s+/i.test(updatedBody) || /keyFile\s+[^\r\n]*webadmin/i.test(updatedBody)) {
+        if (/keyFile\s+/i.test(updatedBody)) {
+          updatedBody = updatedBody.replace(/keyFile\s+[^\r\n]+/i, `keyFile                 ${keyPath}`);
+        } else {
+          updatedBody += `\n  keyFile                 ${keyPath}`;
+        }
         modified = true;
       }
-      if (!/certFile\s+/i.test(updatedBody)) {
-        updatedBody += `\n  certFile                ${certPath}`;
+      // Ensure certFile is correct and not webadmin
+      if (!/certFile\s+/i.test(updatedBody) || /certFile\s+[^\r\n]*webadmin/i.test(updatedBody)) {
+        if (/certFile\s+/i.test(updatedBody)) {
+          updatedBody = updatedBody.replace(/certFile\s+[^\r\n]+/i, `certFile                ${certPath}`);
+        } else {
+          updatedBody += `\n  certFile                ${certPath}`;
+        }
         modified = true;
       }
-      if (!/sslProtocol\s+/i.test(updatedBody)) {
-        updatedBody += '\n  sslProtocol             30';
-        modified = true;
-      }
-      if (!/map\s+/i.test(updatedBody) && /virtualhost\s+Example\b/i.test(content)) {
-        updatedBody += '\n  map                     Example *';
+      if (!/map\s+/i.test(updatedBody) && defaultMapLine) {
+        updatedBody += `\n${defaultMapLine}`;
         modified = true;
       }
       return `listener HTTPS {${updatedBody}\n}`;

@@ -89,6 +89,15 @@ if [[ -f /usr/local/lsws/lsphp83/bin/lsphp ]]; then
   ln -sf /usr/local/lsws/lsphp83/bin/lsphp /usr/local/lsws/fcgi-bin/lsphp 2>/dev/null || true
 fi
 
+# Ensure default SSL certificate files in /usr/local/lsws/conf/ exist with proper permissions (0644)
+mkdir -p /usr/local/lsws/conf 2>/dev/null || true
+if [[ ! -f /usr/local/lsws/conf/example.key || ! -f /usr/local/lsws/conf/example.crt ]]; then
+  if [[ ! -f /usr/local/lsws/conf/server.key || ! -f /usr/local/lsws/conf/server.crt ]]; then
+    openssl req -x509 -newkey rsa:2048 -keyout /usr/local/lsws/conf/example.key -out /usr/local/lsws/conf/example.crt -days 3650 -nodes -subj "/CN=localhost" 2>/dev/null || true
+  fi
+fi
+chmod 644 /usr/local/lsws/conf/*.key /usr/local/lsws/conf/*.crt 2>/dev/null || true
+
 systemctl enable lsws 2>/dev/null || true
 systemctl start lsws 2>/dev/null || true
 echo -e "${GREEN}✓ OpenLiteSpeed installed${NC}"
