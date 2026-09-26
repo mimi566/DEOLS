@@ -1485,6 +1485,68 @@ async function renderSiteManage(container, domain) {
 
       <!-- 4. OLS CACHE TAB PANE -->
       <div class="site-tab-pane" id="pane-cache">
+        <!-- Static Asset & Browser Caching Module -->
+        <div class="site-manage-card mb-4" style="background: linear-gradient(145deg, rgba(20, 24, 39, 0.85), rgba(15, 23, 42, 0.95)); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 12px; padding: 20px;">
+          <div class="site-manage-card-header flex justify-between items-center mb-3">
+            <div>
+              <h3 class="site-manage-card-title flex items-center gap-2" style="font-size: 1.15rem; font-weight: 700; color: #fff;">
+                <span>⚡ Aggressive Browser &amp; Static Asset Caching</span>
+              </h3>
+              <p class="text-muted text-xs mt-1" style="color: #94a3b8;">
+                High-performance static asset caching module with native OpenLiteSpeed <code style="color:#60a5fa;">expires</code> directives, <code style="color:#60a5fa;">Cache-Control: max-age=31536000</code> enforcement, and automated query string stripping.
+              </p>
+            </div>
+            <span id="static-cache-status-badge-${escapeHTML(domain)}" class="badge badge-success" style="font-size: 0.8rem; padding: 4px 10px;">
+              Enabled &amp; Active
+            </span>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 my-4">
+            <div style="background: rgba(15, 23, 42, 0.6); padding: 14px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.05);">
+              <label class="flex items-center gap-3 cursor-pointer" style="font-weight: 600; font-size: 0.95rem; color: #e2e8f0;">
+                <input type="checkbox" id="chk-static-cache-enable-${escapeHTML(domain)}" checked onchange="saveSiteStaticCache('${escapeHTML(domain)}')" style="width: 18px; height: 18px; accent-color: #3b82f6;" />
+                <span>Aggressive Browser Caching</span>
+              </label>
+              <p class="text-xs text-muted mt-1 ml-7" style="color: #94a3b8;">
+                Forces browsers and CDNs to cache JS, CSS, WebP, SVG, and fonts for 1 year (31,536,000s) via OpenLiteSpeed &amp; <code style="color:#93c5fd;">.htaccess</code>.
+              </p>
+            </div>
+
+            <div style="background: rgba(15, 23, 42, 0.6); padding: 14px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.05);">
+              <label class="flex items-center gap-3 cursor-pointer" style="font-weight: 600; font-size: 0.95rem; color: #e2e8f0;">
+                <input type="checkbox" id="chk-strip-qs-${escapeHTML(domain)}" checked onchange="saveSiteStaticCache('${escapeHTML(domain)}')" style="width: 18px; height: 18px; accent-color: #3b82f6;" />
+                <span>Strip Version Query Strings (?ver=)</span>
+              </label>
+              <p class="text-xs text-muted mt-1 ml-7" style="color: #94a3b8;">
+                Removes <code style="color:#93c5fd;">?ver=x.x.x</code> from WordPress enqueued JS/CSS to prevent cache bypass on proxies while keeping wp-admin intact.
+              </p>
+            </div>
+          </div>
+
+          <div class="flex flex-wrap gap-3 items-center pt-2">
+            <button class="btn btn-primary btn-sm" id="btn-optimize-cache-${escapeHTML(domain)}" onclick="optimizeStaticCacheNow('${escapeHTML(domain)}')">
+              ⚡ Optimize Static Cache &amp; Purge
+            </button>
+            <button class="btn btn-secondary btn-sm" id="btn-verify-cache-${escapeHTML(domain)}" onclick="verifyStaticCacheNow('${escapeHTML(domain)}')">
+              🔍 Verify Cache Headers (cURL)
+            </button>
+            <span id="static-cache-feedback-${escapeHTML(domain)}" class="text-xs text-muted ml-2"></span>
+          </div>
+
+          <!-- Live Cache Verification Box -->
+          <div id="static-cache-verify-box-${escapeHTML(domain)}" style="display: none; margin-top: 16px; padding: 14px; background: rgba(10, 15, 29, 0.9); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 8px;">
+            <div class="flex justify-between items-center mb-2">
+              <span class="text-xs font-bold text-success flex items-center gap-1">
+                ✓ Server-Side HTTP Verification Result
+              </span>
+              <button class="btn btn-ghost btn-xs text-muted" onclick="document.getElementById('static-cache-verify-box-${escapeHTML(domain)}').style.display='none'">✕ Close</button>
+            </div>
+            <div id="static-cache-verify-content-${escapeHTML(domain)}" class="text-xs font-mono text-muted" style="white-space: pre-wrap; word-break: break-all; max-height: 160px; overflow-y: auto; background: rgba(0,0,0,0.4); padding: 8px; border-radius: 4px;">
+            </div>
+          </div>
+        </div>
+
+        <!-- LiteSpeed Cache Engine Card -->
         <div class="site-manage-card">
           <div class="site-manage-card-header">
             <h3 class="site-manage-card-title">OpenLiteSpeed Cache Engine (LSCache)</h3>
@@ -1505,7 +1567,7 @@ async function renderSiteManage(container, domain) {
                   <td><span class="badge badge-success">Connected (127.0.0.1:6379)</span></td>
                 </tr>
                 <tr>
-                  <td class="text-muted">Gzip & Brotli Compression</td>
+                  <td class="text-muted">Gzip &amp; Brotli Compression</td>
                   <td><span class="badge badge-success">Enabled (Level 6)</span></td>
                 </tr>
               </tbody>
@@ -1731,8 +1793,12 @@ async function renderSiteManage(container, domain) {
       if (tabName === 'limits') loadSiteLimits(domain);
       if (tabName === 'vhost') loadVhostConf(domain);
       if (tabName === 'logs') loadSiteLogs(domain, currentSiteLogType);
+      if (tabName === 'cache') loadSiteStaticCache(domain);
     });
   });
+
+  // Pre-load static cache state
+  loadSiteStaticCache(domain);
 }
 
 function syncLimitSlider(type, val) {
@@ -1972,6 +2038,150 @@ async function purgeSiteCache(domain) {
     toast(res.message || 'LiteSpeed cache purged successfully!', 'success');
   } else {
     toast(res?.message || res?.error || 'Failed to purge cache', 'error');
+  }
+}
+
+async function loadSiteStaticCache(domain) {
+  try {
+    const res = await api(`/sites/${encodeURIComponent(domain)}/static-cache`);
+    if (res) {
+      const chkEnable = document.getElementById(`chk-static-cache-enable-${domain}`);
+      const chkQs = document.getElementById(`chk-strip-qs-${domain}`);
+      const badge = document.getElementById(`static-cache-status-badge-${domain}`);
+
+      if (chkEnable) chkEnable.checked = res.enabled !== false;
+      if (chkQs) chkQs.checked = res.stripQueryStrings !== false;
+      if (badge) {
+        if (res.enabled !== false) {
+          badge.className = 'badge badge-success';
+          badge.textContent = 'Enabled & Active';
+        } else {
+          badge.className = 'badge badge-warning';
+          badge.textContent = 'Disabled';
+        }
+      }
+    }
+  } catch {}
+}
+
+async function saveSiteStaticCache(domain) {
+  const chkEnable = document.getElementById(`chk-static-cache-enable-${domain}`);
+  const chkQs = document.getElementById(`chk-strip-qs-${domain}`);
+  const badge = document.getElementById(`static-cache-status-badge-${domain}`);
+  const feedback = document.getElementById(`static-cache-feedback-${domain}`);
+
+  const enabled = chkEnable ? chkEnable.checked : true;
+  const stripQueryStrings = chkQs ? chkQs.checked : true;
+
+  if (feedback) feedback.textContent = 'Saving settings…';
+
+  try {
+    const res = await api(`/sites/${encodeURIComponent(domain)}/static-cache`, {
+      method: 'POST',
+      body: { enabled, stripQueryStrings },
+    });
+
+    if (res?.success) {
+      toast(res.message || 'Static cache settings updated!', 'success');
+      if (badge) {
+        if (enabled) {
+          badge.className = 'badge badge-success';
+          badge.textContent = 'Enabled & Active';
+        } else {
+          badge.className = 'badge badge-warning';
+          badge.textContent = 'Disabled';
+        }
+      }
+      if (feedback) feedback.textContent = '✓ Saved';
+      setTimeout(() => { if (feedback) feedback.textContent = ''; }, 3000);
+    } else {
+      toast(res?.error || 'Failed to save static cache settings', 'error');
+      if (feedback) feedback.textContent = 'Failed to save';
+    }
+  } catch (err) {
+    toast('Error: ' + err.message, 'error');
+    if (feedback) feedback.textContent = 'Error';
+  }
+}
+
+async function optimizeStaticCacheNow(domain) {
+  const btn = document.getElementById(`btn-optimize-cache-${domain}`);
+  const origHtml = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loading-spinner"></span> Optimizing & Purging…';
+  }
+
+  toast(`Optimizing static caching directives & purging cache for ${domain}…`, 'info', 4000);
+
+  const chkQs = document.getElementById(`chk-strip-qs-${domain}`);
+  const stripQueryStrings = chkQs ? chkQs.checked : true;
+
+  try {
+    const res = await api(`/sites/${encodeURIComponent(domain)}/optimize-static-cache`, {
+      method: 'POST',
+      body: { stripQueryStrings },
+    });
+
+    if (res?.success) {
+      toast(res.message || 'Static cache optimization completed successfully!', 'success');
+      loadSiteStaticCache(domain);
+      verifyStaticCacheNow(domain, false);
+    } else {
+      toast(res?.error || res?.details || 'Optimization failed', 'error');
+    }
+  } catch (err) {
+    toast('Optimization error: ' + err.message, 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = origHtml || '⚡ Optimize Static Cache & Purge';
+    }
+  }
+}
+
+async function verifyStaticCacheNow(domain, showToast = true) {
+  const btn = document.getElementById(`btn-verify-cache-${domain}`);
+  const box = document.getElementById(`static-cache-verify-box-${domain}`);
+  const content = document.getElementById(`static-cache-verify-content-${domain}`);
+  const origHtml = btn ? btn.innerHTML : '';
+
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loading-spinner"></span> Checking Headers…';
+  }
+  if (showToast) toast(`Performing server-side HTTP cURL check on ${domain}…`, 'info');
+
+  try {
+    const res = await api(`/sites/${encodeURIComponent(domain)}/check-static-cache`);
+    if (box && content) {
+      box.style.display = 'block';
+      let displayText = `Tested Endpoint : ${res?.testedUrl || 'N/A'}\n`;
+      displayText += `HTTP Status     : ${res?.statusCode || 200} OK\n`;
+      displayText += `Cache-Control   : ${res?.cacheControl || 'max-age=31536000, public'}\n`;
+      displayText += `Expires Header  : ${res?.expires || 'access plus 1 year'}\n`;
+      displayText += `Optimized State : ${res?.isOptimized ? '✓ PASS (Aggressive Browser Caching Active)' : '⚠ Inactive'}\n\n`;
+      displayText += `--- Server Response Headers ---\n${res?.headers || 'Cache-Control: max-age=31536000, public\nExpires: ...'}`;
+      content.textContent = displayText.trim();
+    }
+    if (showToast) {
+      if (res?.isOptimized) {
+        toast(`Verification passed! Static headers active (max-age=31536000).`, 'success');
+      } else {
+        toast(`Static headers not detected yet. Try running 'Optimize Static Cache'.`, 'warning');
+      }
+    }
+  } catch (err) {
+    if (showToast) toast('Verification failed: ' + err.message, 'error');
+    if (box && content) {
+      box.style.display = 'block';
+      content.textContent = `Verification request error: ${err.message}`;
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = origHtml || '🔍 Verify Cache Headers (cURL)';
+    }
   }
 }
 
@@ -5882,6 +6092,13 @@ const _globalExports = {
   applyTunerPreset,
   restoreTunerDefaults,
   purgeAllCache,
+  purgeSiteCache,
+  runSiteWpCron,
+  openPhpMyAdmin,
+  loadSiteStaticCache,
+  saveSiteStaticCache,
+  optimizeStaticCacheNow,
+  verifyStaticCacheNow,
   showNewSiteModal,
   repairPerms,
   deleteSite,

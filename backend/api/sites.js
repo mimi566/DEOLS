@@ -24,6 +24,15 @@ import {
   getSystemQuotaStatus,
   getRealTimeUserMetrics,
 } from '../services/isolation.js';
+import {
+  injectStaticAssetHtaccess,
+  removeStaticAssetHtaccess,
+  ensureMuPluginCacheOptimizer,
+  ensureVhConfExpires,
+  getSiteStaticCacheStatus,
+  optimizeWordPressStaticCache,
+  checkStaticAssetCaching,
+} from '../services/staticCache.js';
 
 const SITES_FILE = join(config.dataDir, 'sites.json');
 
@@ -205,7 +214,7 @@ require_once ABSPATH . 'wp-settings.php';
         ], { cwd: docRoot });
       } catch {}
 
-      // 8. Install LiteSpeed Cache plugin
+      // 8. Install LiteSpeed Cache plugin & optimize static cache
       if (enableLSCache) {
         try {
           await run(wpBin, [
@@ -214,8 +223,16 @@ require_once ABSPATH . 'wp-settings.php';
             '--path=' + docRoot,
             '--allow-root',
           ], { cwd: docRoot });
+
+          // Configure WP-CLI static optimization
+          await run(wpBin, ['lscache-param', 'set', 'optm_qs', 'true', '--path=' + docRoot, '--allow-root'], { cwd: docRoot });
+          await run(wpBin, ['lscache-param', 'set', 'cache-ttl_static', '2419200', '--path=' + docRoot, '--allow-root'], { cwd: docRoot });
         } catch {}
       }
+
+      // Inject Static Asset Caching headers & MU-Plugin Query String optimizer
+      injectStaticAssetHtaccess(docRoot);
+      ensureMuPluginCacheOptimizer(docRoot, true);
 
       // 9. Set up multi-tenant user isolation & systemd cgroups slice
       const systemUser = generateSystemUsername(cleanDomain);
@@ -804,5 +821,87 @@ require_once ABSPATH . 'wp-settings.php';
       newPassword: safePass,
     };
   });
+
+  // ─── Static Asset & Browser Caching Status ─────────────
+  app.get('/:domain/static-cache', async (request, reply) => {
+    let { domain } = request.params;
+    const sites = loadSites();
+    const site = sites.find((s) => s.domain === domain || s.id === domain);
+    if (site) domain = site.domain;
+
+    const status = getSiteStaticCacheStatus(domain);
+    return status;
+  });
+
+  // ─── Toggle / Update Static Asset Caching ───────────────
+  app.post('/:domain/static-cache', async (request, reply) => {
+    let { domain } = request.params;
+    const sites = loadSites();
+    const site = sites.find((s) => s.domain === domain || s.id === domain);
+    if (site) domain = site.domain;
+
+    const { enabled = true, stripQueryStrings = true } = request.body || {};
+    const siteRoot = join(config.webRoot, domain);
+    const docRoot = join(siteRoot, 'public_html');
+
+    if (enabled) {
+      injectStaticAssetHtaccess(docRoot);
+      ensureVhConfExpires(domain);
+    } else {
+      removeStaticAssetHtaccess(docRoot);
+    }
+
+    ensureMuPluginCacheOptimizer(docRoot, !!stripQueryStrings);
+
+    // If WordPress CLI available, update optm_qs
+    const wpBin = config.bin.wp || '/usr/local/bin/wp';
+    if (existsSync(join(docRoot, 'wp-load.php'))) {
+      try {
+        await run(wpBin, ['lscache-param', 'set', 'optm_qs', stripQueryStrings ? 'true' : 'false', `--path=${docRoot}`, '--allow-root'], { cwd: docRoot });
+      } catch {}
+    }
+
+    return {
+      success: true,
+      message: `Static asset caching settings for '${domain}' updated successfully!`,
+      status: getSiteStaticCacheStatus(domain),
+    };
+  });
+
+  // ─── Run Full Static Asset Cache Optimization ───────────
+  app.post('/:domain/optimize-static-cache', async (request, reply) => {
+    let { domain } = request.params;
+    const sites = loadSites();
+    const site = sites.find((s) => s.domain === domain || s.id === domain);
+    if (site) domain = site.domain;
+
+    const { stripQueryStrings = true } = request.body || {};
+    try {
+      const results = await optimizeWordPressStaticCache(domain, stripQueryStrings);
+      return {
+        success: true,
+        message: `Static asset caching & LiteSpeed optimization completed for '${domain}'!`,
+        results,
+      };
+    } catch (err) {
+      return reply.code(500).send({ error: 'Optimization failed', details: err.message });
+    }
+  });
+
+  // ─── Verify Live Static Cache Headers (cURL Inspection) ──
+  app.get('/:domain/check-static-cache', async (request, reply) => {
+    let { domain } = request.params;
+    const sites = loadSites();
+    const site = sites.find((s) => s.domain === domain || s.id === domain);
+    if (site) domain = site.domain;
+
+    try {
+      const check = await checkStaticAssetCaching(domain);
+      return check;
+    } catch (err) {
+      return reply.code(500).send({ error: 'Cache verification check failed', details: err.message });
+    }
+  });
 }
+
 

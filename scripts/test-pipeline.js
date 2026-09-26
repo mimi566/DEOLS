@@ -335,6 +335,63 @@ WantedBy=multi-user.target
   assert(typeof ssoRes.user === 'string' && ssoRes.user.length > 0, `Auto-Login user resolved (${ssoRes.user})`);
   assert(ssoRes.actionUrl.includes('/phpmyadmin/index.php'), `Auto-Login action URL targeted to phpMyAdmin: ${ssoRes.actionUrl}`);
 
+  // ─── STEP 12: Static Asset Browser Caching & Query String Stripping ───
+  console.log('\n\x1b[33m[12/12] Testing Global Static Asset Caching & Query String Stripping...\x1b[0m');
+  const {
+    injectStaticAssetHtaccess,
+    removeStaticAssetHtaccess,
+    ensureMuPluginCacheOptimizer,
+    ensureVhConfExpires,
+    getSiteStaticCacheStatus,
+    optimizeWordPressStaticCache,
+    checkStaticAssetCaching,
+  } = await import('../backend/services/staticCache.js');
+
+  // 1. Test VHost template expires block
+  assert(vhconfContent.includes('expires  {') || vhconfContent.includes('expires {'), 'vhconf.conf includes OpenLiteSpeed native expires module block');
+  assert(vhconfContent.includes('expiresDefault          "access plus 1 month"'), 'vhconf.conf sets default expiration to 1 month');
+  assert(vhconfContent.includes('application/javascript="access plus 1 year"'), 'vhconf.conf sets JavaScript expires to 1 year');
+  assert(vhconfContent.includes('text/css="access plus 1 year"'), 'vhconf.conf sets CSS expires to 1 year');
+  assert(vhconfContent.includes('font/*="access plus 1 year"'), 'vhconf.conf sets web font expires to 1 year');
+
+  // 2. Test .htaccess static cache headers injection
+  const htaccessInjected = injectStaticAssetHtaccess(docRoot);
+  assert(htaccessInjected === true, 'Static asset caching rules injected into .htaccess');
+  const htContent = readFileSync(join(docRoot, '.htaccess'), 'utf-8');
+  assert(htContent.includes('# DEOLS Static Asset Caching Rules'), '.htaccess contains DEOLS static caching marker');
+  assert(htContent.includes('<IfModule mod_expires.c>'), '.htaccess includes mod_expires rules');
+  assert(htContent.includes('Header set Cache-Control "max-age=31536000, public"'), '.htaccess sets aggressive Cache-Control header (1 year)');
+
+  // 3. Test WordPress Must-Use plugin generation
+  const muInjected = ensureMuPluginCacheOptimizer(docRoot, true);
+  assert(muInjected === true, 'WordPress MU-plugin optimizer generated in wp-content/mu-plugins/');
+  const muPath = join(docRoot, 'wp-content', 'mu-plugins', 'deols-cache-optimization.php');
+  assert(existsSync(muPath), `MU-plugin file exists: ${muPath}`);
+  const muContent = readFileSync(muPath, 'utf-8');
+  assert(muContent.includes('deols_remove_asset_version_query_string'), 'MU-plugin contains query string stripping filter');
+  assert(muContent.includes('script_loader_src'), 'MU-plugin filters script_loader_src');
+  assert(muContent.includes('style_loader_src'), 'MU-plugin filters style_loader_src');
+
+  // 4. Test Site Static Cache Status Detector
+  const cacheStatus = getSiteStaticCacheStatus(cleanDomain, docRoot);
+  assert(cacheStatus.enabled === true, 'Static cache status detected as enabled');
+  assert(cacheStatus.hasHtaccessRules === true, 'Status correctly detects .htaccess caching rules');
+  assert(cacheStatus.hasMuPlugin === true, 'Status correctly detects WordPress MU-plugin');
+  assert(cacheStatus.stripQueryStrings === true, 'Status correctly detects query string stripping');
+
+  // 5. Test Server-side cURL verification utility
+  const checkRes = await checkStaticAssetCaching(cleanDomain);
+  assert(typeof checkRes.domain === 'string' && checkRes.domain === cleanDomain, 'Verification returns correct target domain');
+  assert(checkRes.statusCode === 200, `Verification HTTP status: ${checkRes.statusCode}`);
+  assert(checkRes.cacheControl.includes('max-age=31536000'), `Verification confirms Cache-Control: ${checkRes.cacheControl}`);
+  assert(checkRes.isOptimized === true, 'Verification flags asset as fully optimized');
+
+  // 6. Test clean removal of .htaccess rules when disabled
+  const htaccessRemoved = removeStaticAssetHtaccess(docRoot);
+  assert(htaccessRemoved === true, 'Static asset rules cleanly removed from .htaccess');
+  const htContentAfter = readFileSync(join(docRoot, '.htaccess'), 'utf-8');
+  assert(!htContentAfter.includes('# DEOLS Static Asset Caching Rules'), 'Verified no residual cache marker in .htaccess');
+
   // Cleanup sandbox
   try {
     removeVirtualHostFromOls(cleanDomain);

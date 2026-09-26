@@ -382,6 +382,12 @@ extprocessor lsphp${phpSuffix} {
   procHardLimit           1500
 }
 
+expires  {
+  enable                  1
+  expiresDefault          "access plus 1 month"
+  expiresByType           image/*="access plus 1 year", text/css="access plus 1 year", application/javascript="access plus 1 year", application/x-javascript="access plus 1 year", font/*="access plus 1 year", application/font-woff2="access plus 1 year"
+}
+
 rewrite {
   enable                  1
   autoLoadHtaccess        1
