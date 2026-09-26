@@ -1434,7 +1434,15 @@ async function renderSiteManage(container, domain) {
       <div class="site-tab-pane" id="pane-databases">
         <div class="site-manage-card">
           <div class="site-manage-card-header">
-            <h3 class="site-manage-card-title">Associated MariaDB Database</h3>
+            <div>
+              <h3 class="site-manage-card-title">Associated MariaDB Database</h3>
+              <p class="text-muted text-xs" style="margin-top:2px;">
+                Direct phpMyAdmin & SQL Management for <strong>${escapeHTML(dbName)}</strong>
+              </p>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="openPhpMyAdmin('${escapeHTML(dbName)}', '${escapeHTML(domain)}')">
+              🗄️ Open in phpMyAdmin ↗
+            </button>
           </div>
           <div class="table-wrap">
             <table class="table">
@@ -1459,7 +1467,10 @@ async function renderSiteManage(container, domain) {
             </table>
           </div>
           <div class="flex gap-3 mt-4" style="flex-wrap:wrap">
-            <button class="btn btn-primary btn-sm" onclick="repairSiteDatabase('${escapeHTML(domain)}')">
+            <button class="btn btn-primary btn-sm" onclick="openPhpMyAdmin('${escapeHTML(dbName)}', '${escapeHTML(domain)}')">
+              🗄️ Open in phpMyAdmin ↗
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="repairSiteDatabase('${escapeHTML(domain)}')">
               🔧 Repair & Optimize Database
             </button>
             <button class="btn btn-warning btn-sm" onclick="fixSiteDbConnection('${escapeHTML(domain)}')">
@@ -2048,12 +2059,18 @@ async function renderDatabases(container) {
     <div class="flex justify-between items-center mb-6">
       <p class="text-muted">Manage MariaDB databases, users, permissions, and passwords</p>
       <div class="flex gap-3">
+        <button class="btn btn-secondary" onclick="openPhpMyAdmin()"><span style="margin-right:4px;">🗄️</span> phpMyAdmin ↗</button>
         <button class="btn btn-secondary" onclick="showNewDbUserModal()">+ New DB User</button>
         <button class="btn btn-primary" onclick="showNewDbModal()">+ New Database</button>
       </div>
     </div>
     <div class="card mb-6">
-      <div class="card-header"><h2 class="card-title">Databases</h2></div>
+      <div class="card-header flex justify-between items-center">
+        <h2 class="card-title">Databases</h2>
+        <button class="btn btn-sm btn-ghost text-primary" onclick="openPhpMyAdmin()">
+          🗄️ Open in phpMyAdmin ↗
+        </button>
+      </div>
       <div class="card-body" id="db-list"><p class="text-muted">Loading…</p></div>
     </div>
     <div class="card">
@@ -2075,6 +2092,7 @@ async function renderDatabases(container) {
             <td class="text-sm text-muted">${escapeHTML(d.collation)}</td>
             <td>
               <div class="flex gap-2">
+                <button class="btn btn-sm btn-primary" onclick="openPhpMyAdmin('${escapeHTML(d.name)}')">🗄️ phpMyAdmin</button>
                 <button class="btn btn-sm btn-secondary" onclick="repairDatabase('${escapeHTML(d.name)}')">🔧 Repair</button>
                 <button class="btn btn-sm btn-danger" onclick="dropDb('${escapeHTML(d.name)}')">Drop</button>
               </div>
@@ -2341,6 +2359,67 @@ async function dropDbUser(user, host) {
   const result = await api(`/databases/users/${user}?host=${host}`, { method: 'DELETE' });
   if (result?.success) { toast('User dropped', 'success'); navigateTo('databases'); }
   else toast(result?.error || 'Failed', 'error');
+}
+
+// ─── phpMyAdmin Integration ─────────────────────────────────
+
+async function openPhpMyAdmin(dbName = '', domain = '') {
+  toast('Connecting to phpMyAdmin…', 'info', 2000);
+  const status = await api('/databases/pma/status');
+
+  if (!status || !status.installed) {
+    showModal('Install phpMyAdmin', `
+      <div class="flex flex-col gap-4">
+        <div style="text-align:center;padding:12px 0;">
+          <div style="font-size:3.5rem;margin-bottom:12px;">🗄️</div>
+          <h3 style="font-size:1.2rem;font-weight:700;margin-bottom:8px;">phpMyAdmin Database Manager</h3>
+          <p class="text-muted" style="font-size:0.9rem;line-height:1.5;">
+            phpMyAdmin is not installed on this server yet. DEOLS can automatically download, secure with blowfish encryption, and configure phpMyAdmin for OpenLiteSpeed in one click.
+          </p>
+        </div>
+        <div class="flex justify-end gap-3 pt-3" style="border-top:1px solid var(--border-primary);">
+          <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+          <button class="btn btn-primary" id="btn-install-pma" onclick="installPhpMyAdminNow('${escapeHTML(dbName)}', '${escapeHTML(domain)}')">
+            ⚡ Install & Launch phpMyAdmin
+          </button>
+        </div>
+      </div>
+    `);
+    return;
+  }
+
+  const query = [];
+  if (dbName) query.push(`dbName=${encodeURIComponent(dbName)}`);
+  if (domain) query.push(`domain=${encodeURIComponent(domain)}`);
+  const qStr = query.length ? `?${query.join('&')}` : '';
+
+  const launch = await api(`/databases/pma/url${qStr}`);
+  const targetUrl = launch?.url || status.url || `http://${window.location.hostname}/phpmyadmin/`;
+
+  window.open(targetUrl, '_blank');
+}
+
+async function installPhpMyAdminNow(dbName = '', domain = '') {
+  const btn = document.getElementById('btn-install-pma');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loading-spinner"></span> Installing phpMyAdmin…';
+  }
+
+  toast('Installing phpMyAdmin and configuring OpenLiteSpeed context…', 'info', 6000);
+  const res = await api('/databases/pma/install', { method: 'POST', body: {} });
+
+  if (res?.success) {
+    toast('phpMyAdmin installed successfully!', 'success');
+    closeModal();
+    await openPhpMyAdmin(dbName, domain);
+  } else {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '⚡ Try Again';
+    }
+    toast(res?.error || res?.details || 'Failed to install phpMyAdmin', 'error');
+  }
 }
 
 // ─── SSL Page ───────────────────────────────────────────────

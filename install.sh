@@ -129,14 +129,44 @@ systemctl enable redis-server 2>/dev/null || true
 systemctl start redis-server 2>/dev/null || true
 echo -e "${GREEN}✓ Redis Cache Server installed and active${NC}"
 
-# ─── Install WP-CLI ──────────────────────────────────────
+# ─── Install WP-CLI & phpMyAdmin ─────────────────────────
 
-echo -e "${CYAN}[6/8] Installing WP-CLI…${NC}"
+echo -e "${CYAN}[6/8] Installing WP-CLI & phpMyAdmin…${NC}"
 if ! command -v wp &>/dev/null; then
   curl -fsSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /usr/local/bin/wp 2>/dev/null || true
   chmod +x /usr/local/bin/wp 2>/dev/null || true
 fi
 echo -e "${GREEN}✓ WP-CLI $(wp --version 2>/dev/null || echo 'installed')${NC}"
+
+# Set up phpMyAdmin in /opt/deols/phpmyadmin if not present
+mkdir -p /opt/deols/phpmyadmin /tmp/lshttpd 2>/dev/null || true
+chmod 1777 /tmp/lshttpd 2>/dev/null || true
+if [[ ! -f /opt/deols/phpmyadmin/index.php && ! -f /usr/share/phpmyadmin/index.php ]]; then
+  echo -e "${CYAN}Setting up phpMyAdmin Database Manager…${NC}"
+  curl -fsSL https://files.phpmyadmin.net/phpMyAdmin/5.2.1/phpMyAdmin-5.2.1-all-languages.tar.gz | tar -xz --strip-components=1 -C /opt/deols/phpmyadmin 2>/dev/null || true
+  if [[ -f /opt/deols/phpmyadmin/index.php ]]; then
+    PMA_SECRET=$(openssl rand -hex 16 2>/dev/null || echo "deols_pma_secret_blowfish_32chars")
+    cat > /opt/deols/phpmyadmin/config.inc.php <<EOF
+<?php
+declare(strict_types=1);
+\$cfg['blowfish_secret'] = '${PMA_SECRET}';
+\$i = 1;
+\$cfg['Servers'][\$i]['auth_type'] = 'cookie';
+\$cfg['Servers'][\$i]['host'] = '127.0.0.1';
+\$cfg['Servers'][\$i]['port'] = '3306';
+\$cfg['Servers'][\$i]['connect_type'] = 'tcp';
+\$cfg['Servers'][\$i]['compress'] = false;
+\$cfg['Servers'][\$i]['AllowNoPassword'] = false;
+\$cfg['Servers'][\$i]['extension'] = 'mysqli';
+\$cfg['UploadDir'] = '';
+\$cfg['SaveDir'] = '';
+\$cfg['TempDir'] = '/tmp';
+EOF
+    chown -R nobody:nogroup /opt/deols/phpmyadmin 2>/dev/null || true
+    chmod -R 755 /opt/deols/phpmyadmin 2>/dev/null || true
+  fi
+fi
+echo -e "${GREEN}✓ phpMyAdmin Database Manager ready${NC}"
 
 # ─── Install DEOLS Panel ────────────────────────────────
 

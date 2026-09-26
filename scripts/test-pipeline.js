@@ -308,6 +308,26 @@ WantedBy=multi-user.target
   assert(typeof userMetrics.diskMb === 'number', `Live Disk metric collected: ${userMetrics.diskMb} MB`);
   assert(typeof userMetrics.activeTasks === 'number', `Live Tasks metric collected: ${userMetrics.activeTasks}`);
 
+  // ─── STEP 11: phpMyAdmin Database Manager Integration ───────
+  console.log('\n\x1b[33m[11/11] Testing phpMyAdmin Service & Direct Launch URL...\x1b[0m');
+  const {
+    getPmaStatus,
+    getPmaLaunchUrl,
+    installPhpMyAdmin,
+  } = await import('../backend/services/pma.js');
+
+  const pmaInstallRes = await installPhpMyAdmin();
+  assert(pmaInstallRes.success === true, 'phpMyAdmin install process completed successfully');
+
+  const pmaStatus = await getPmaStatus();
+  assert(typeof pmaStatus.installed === 'boolean', `phpMyAdmin status detected (installed: ${pmaStatus.installed})`);
+  assert(typeof pmaStatus.url === 'string' && pmaStatus.url.includes('/phpmyadmin/'), `phpMyAdmin base URL generated: ${pmaStatus.url}`);
+
+  const testDbName = 'wp_example_site';
+  const pmaLaunch = await getPmaLaunchUrl(testDbName, cleanDomain);
+  assert(pmaLaunch.url.includes(cleanDomain) || pmaLaunch.url.includes('127.0.0.1'), `phpMyAdmin host resolved: ${pmaLaunch.url}`);
+  assert(pmaLaunch.url.includes(`db=${testDbName}`), `phpMyAdmin direct database route encoded: ${pmaLaunch.url}`);
+
   // Cleanup sandbox
   try {
     removeVirtualHostFromOls(cleanDomain);

@@ -1,8 +1,29 @@
 import { config } from '../config.js';
 import { shell, run, execSql, generatePassword } from '../utils/shell.js';
+import { getPmaStatus, installPhpMyAdmin, getPmaLaunchUrl } from '../services/pma.js';
 
 export default async function databaseRoutes(app) {
   app.addHook('preHandler', app.authenticate);
+
+  // ─── phpMyAdmin Status & Information ───────────────────
+  app.get('/pma/status', async () => {
+    return await getPmaStatus();
+  });
+
+  // ─── Install phpMyAdmin (One-Click) ────────────────────
+  app.post('/pma/install', async (request, reply) => {
+    const res = await installPhpMyAdmin();
+    if (!res.success) {
+      return reply.code(500).send(res);
+    }
+    return res;
+  });
+
+  // ─── Get phpMyAdmin Direct Launch URL ───────────────────
+  app.get('/pma/url', async (request) => {
+    const { dbName, domain } = request.query || {};
+    return await getPmaLaunchUrl(dbName, domain);
+  });
 
   // ─── List Databases ────────────────────────────────────
   app.get('/', async (request, reply) => {
